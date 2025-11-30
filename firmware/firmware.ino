@@ -21,7 +21,7 @@ const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
 // function declarations
-void setupLedFlash();
+// void setupLedFlash();
 void connectWifi();
 void sendPhoto();
 
@@ -120,40 +120,66 @@ void setup() {
 
 // Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
-  setupLedFlash();
+  // setupLedFlash();
 #endif
 
-  connectWifi();
+  bool initConnected = connectWifi();
+  if (!initConnected) {
+    return false;
+  }
 }
 
 void loop() {
   // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+  unsigned long currentTime = millis();
+  
+  if (currentTime - lastPhotoTime >= photoInterval) {
+    lastPhotoTime = currentTime;
+    sendPhoto();
+  }
+
+
 }
 
-void connectWifi () {
+bool connectWifi () {
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
   Serial.print("WiFi connecting");
+  int delayed = 0;
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
+    delayed += 500;
     Serial.print(".");
+
+    if (delayed >= photoInterval) {
+      Serial.println("WIFI connection timed out.");
+      Serial.println("Exiting the program...");
+      return false;
+    }
+
+    
   }
   Serial.println("");
   Serial.println("WiFi connected");
+  
 
 
 
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
+  return true;
 }
 
 void sendPhoto () {
   if (Wifi.status() != WL_CONNECTED) {
     Serial.println("Wifi is disconnected, will try to reconnect.");
-    connectWifi();
+    bool connected = connectWifi();
+
+    if (!connected) {
+      return true
+    }
   }
   // Capture the image
   Serial.println("Capturing the image ...");
@@ -169,7 +195,7 @@ void sendPhoto () {
 
   Serial.printf("Photo captured. Size: %u bytes\n", camera_frame_buffer->len);
 
-  HttpClient http;
+  HTTPClient http;
 
   // construct http post
   http.begin(POST);
@@ -191,7 +217,7 @@ void sendPhoto () {
   }
 
   // Release the frame buffer to avoid memory leaks
-  esp_camera_fb_return(fb);
+  esp_camera_fb_return(camera_frame_buffer);
 
   // Close connection
   http.end();
