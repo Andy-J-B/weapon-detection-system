@@ -1,5 +1,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
+#include <HTTPClient.h>
+
 
 // ===========================
 // Select camera model in board_config.h
@@ -18,8 +20,10 @@ const char *POST_URL = "";
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
-
+// function declarations
 void setupLedFlash();
+void connectWifi();
+void sendPhoto();
 
 void setup() {
   Serial.begin(115200);
@@ -119,6 +123,15 @@ void setup() {
   setupLedFlash();
 #endif
 
+  connectWifi();
+}
+
+void loop() {
+  // Do nothing. Everything is done in another task by the web server
+  delay(10000);
+}
+
+void connectWifi () {
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
@@ -130,14 +143,57 @@ void setup() {
   Serial.println("");
   Serial.println("WiFi connected");
 
-  startCameraServer();
+
 
   Serial.print("Camera Ready! Use 'http://");
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
 }
 
-void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+void sendPhoto () {
+  if (Wifi.status() != WL_CONNECTED) {
+    Serial.println("Wifi is disconnected, will try to reconnect.");
+    connectWifi();
+  }
+  // Capture the image
+  Serial.println("Capturing the image ...");
+
+  camera_fb_t * camera_frame_buffer = NULL;
+  camera_frame_buffer = esp_camera_fb_get();
+
+  if (!camera_frame_buffer) {
+    Serial.println("Capuring image failed!");
+    Serial.println("No frame buffer created, exiting program...");
+    return;
+  }
+
+  Serial.printf("Photo captured. Size: %u bytes\n", camera_frame_buffer->len);
+
+  HttpClient http;
+
+  // construct http post
+  http.begin(POST);
+  http.addHeader("Content-Type", "image/jpeg");
+
+  Serial.print("Sending the POST request to :");
+  Serial.println(POST_URL);
+
+  // send post request
+  int httpResponseCode = http.POST(camera_frame_buffer->buf, camera_frame_buffer->len);
+  // receive server response
+  if (httpResponseCode > 0) {
+    Serial.printf("HTTP POST Success! Response code: %d\n", httpResponseCode);
+    String payload = http.getString();
+    Serial.print("Server Response: ");
+    Serial.println(payload);
+  } else {
+    Serial.printf("HTTP POST Failed! Error code: %d\n", httpResponseCode);
+  }
+
+  // Release the frame buffer to avoid memory leaks
+  esp_camera_fb_return(fb);
+
+  // Close connection
+  http.end();
+  
 }
