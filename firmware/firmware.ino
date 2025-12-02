@@ -11,10 +11,10 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
-const char *ssid = "Kevin 5G";
-const char *password = "Cookie1234";
+const char *ssid = "Kevin";
+const char *password = "Cookie1207";
 
-const char *POST_URL = "";
+const char *POST_URL = "http://10.0.0.135:8080/image";
 
 // Set interval for photo taking in ms
 const int photoInterval = 10000; // 10 seconds
@@ -22,7 +22,7 @@ unsigned long lastPhotoTime = 0;
 
 // function declarations
 // void setupLedFlash();
-void connectWifi();
+bool connectWifi();
 void sendPhoto();
 
 void setup() {
@@ -123,10 +123,10 @@ void setup() {
   // setupLedFlash();
 #endif
 
-  bool initConnected = connectWifi();
-  if (!initConnected) {
-    return false;
-  }
+  if (!connectWifi()) {
+    Serial.println("Will keep trying later...");
+}
+
 }
 
 void loop() {
@@ -141,46 +141,57 @@ void loop() {
 
 }
 
-bool connectWifi () {
-  WiFi.begin(ssid, password);
-  WiFi.setSleep(false);
-
-  Serial.print("WiFi connecting");
-  int delayed = 0;
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500);
-    delayed += 500;
-    Serial.print(".");
-
-    if (delayed >= photoInterval) {
-      Serial.println("WIFI connection timed out.");
-      Serial.println("Exiting the program...");
-      return false;
+bool connectWifi()
+{
+    // If we already have a connection – great.
+    if (WiFi.status() == WL_CONNECTED) {
+        return true;
     }
 
-    
-  }
-  Serial.println("");
-  Serial.println("WiFi connected");
-  
+    // Make sure the driver is in STA mode and clear any old credentials.
+    WiFi.disconnect(true);          // erase NVS stored credentials
+    WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);           // keep the radio awake
 
+    Serial.print("Connecting to SSID: ");
+    Serial.println(ssid);
+    WiFi.begin(ssid, password);    // **ONE** call only
 
+    // Wait up to 20 s for a successful association.
+    const unsigned long timeout = 20000;   // ms
+    unsigned long start = millis();
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
+        delay(500);
+        Serial.print(".");
+    }
+    Serial.println();   // newline after the dots
 
-  Serial.print("Camera Ready! Use 'http://");
-  Serial.print(WiFi.localIP());
-  Serial.println("' to connect");
-  return true;
+    if (WiFi.status() == WL_CONNECTED) {
+        Serial.println("Wi‑Fi connected");
+        Serial.print("IP address: ");
+        Serial.println(WiFi.localIP());
+        Serial.print("RSSI: ");
+        Serial.println(WiFi.RSSI());
+        return true;
+    }
+
+    Serial.println("Wi‑Fi connection timed out.");
+    return false;
 }
 
-void sendPhoto () {
-  if (Wifi.status() != WL_CONNECTED) {
-    Serial.println("Wifi is disconnected, will try to reconnect.");
-    bool connected = connectWifi();
 
-    if (!connected) {
-      return true
+
+void sendPhoto () {
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("Wi‑Fi lost – trying to reconnect");
+    if (!connectWifi()) {
+        Serial.println("Re‑connect failed – abort send");
+        return;      // abort this photo
     }
   }
+
+
   // Capture the image
   Serial.println("Capturing the image ...");
 
@@ -198,7 +209,7 @@ void sendPhoto () {
   HTTPClient http;
 
   // construct http post
-  http.begin(POST);
+  http.begin(POST_URL);
   http.addHeader("Content-Type", "image/jpeg");
 
   Serial.print("Sending the POST request to :");
