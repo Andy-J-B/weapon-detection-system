@@ -26,7 +26,12 @@
 #include <algorithm> // Used for algorithms to help with helper functions? like find_if_not
 #include <cctype> // character logic
 #include <sstream> // allow you to treat strings as streams, enabling you to perform formatted input and output operations on them
-#include "opencv2/core.hpp"
+#include <opencv2/core.hpp>
+#include <opencv2/dnn.hpp>
+#include <opencv2/imgcodecs.hpp>
+#include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>  
+#include <opencv2/highgui.hpp>  
 
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
@@ -41,6 +46,146 @@ static inline std::string trim(const std::string& s)
     auto end   = std::find_if_not(s.rbegin(), s.rend(),
                                   [](unsigned char c){ return std::isspace(c); }).base();
     return (start < end) ? std::string(start, end) : std::string{};
+}
+
+/* ------------------------------------------------------------------
+ *  AI - Runs 
+ * ------------------------------------------------------------------ */
+bool run_yolo(cv::Mat& image) {
+    static const std::string modelPath = "best.onnx";   // <-- adjust to your exported ONNX file
+    static const float CONF_THRESH = 0.35f;             // detection confidence (objectness × class‑score)
+    static const float NMS_THRESH  = 0.45f;             // used only if you decide to keep boxes
+    static const cv::Size INPUT_SIZE(640, 640); 
+
+    // 0 : knife, 1 : handgun
+    static const std::vector<int> weaponClassIds = {0, 1};
+
+    static cv::dnn::Net net;
+    static bool netInitialized = false;
+
+    if (!netInitialized)
+    {
+        try
+        {
+            net = cv::dnn::readNetFromONNX(modelPath);
+            // Choose the backend that best fits your hardware.
+            //   - CPU only: DNN_BACKEND_OPENCV + DNN_TARGET_CPU
+            //   - CUDA (if available): DNN_BACKEND_CUDA + DNN_TARGET_CUDA
+            net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
+            net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
+            netInitialized = true;
+        }
+        catch (const cv::Exception& e)
+        {
+            std::cerr << "⚠️  Failed to load YOLO model from '" << modelPath
+                      << "': " << e.what() << std::endl;
+            return false;   // without a model we cannot detect anything
+        }
+    }
+
+    if (image.empty())
+    {
+        std::cerr << "⚠️  run_yolo received an empty image." << std::endl;
+        return false;
+    }
+
+    // Pre-process
+    cv::Mat blob = cv::dnn::blobFromImage(
+        image,                // source image (BGR)
+        1.0 / 255.0,         // scale factor – YOLO expects values in [0,1]
+        INPUT_SIZE,         // resize to the size used during training
+        cv::Scalar(),       // mean subtraction (none)
+        true,               // swap RB (OpenCV loads BGR, YOLO was trained on RGB)
+        false               // crop – we want a straight resize with letter‑box padding handled by the network
+    );
+
+    // Forward Pass
+    net.setInput(blob);
+
+
+    cv::Mat preds;
+    try
+    {
+        preds = net.forward();   // single output
+    }
+    catch (const cv::Exception& e)
+    {
+        std::cerr << "⚠️  Inference error: " << e.what() << std::endl;
+        return false;
+    }
+
+    // The output may be a 3‑D Mat; flatten it to a 2‑D view for easier indexing.
+    // Expected shape: (1, N, C)  →  we drop the leading 1.
+    const int numDetections = preds.size[1];
+    const int numChannels   = preds.size[2];   // typically 5 + num_classes
+
+    // Safety check – if the tensor shape is not what we expect, abort.
+    if (numDetections == 0 || numChannels <= 5)
+    {
+        std::cerr << "⚠️  Unexpected network output shape." << std::endl;
+        return false;
+    }
+
+    // Create a view that treats the data as a matrix of [N x C] floats.
+    cv::Mat detections(numDetections, numChannels, CV_32F, preds.ptr<float>());
+
+    // --------------------------------------------------------------
+    // 5️⃣  Scan detections – as soon as we see a weapon we can stop.
+    // --------------------------------------------------------------
+    for (int i = 0; i < numDetections; ++i)
+    {
+        // -----------------------------------------------------------------
+        // YOLO layout (per row):
+        //   0‑3 : bbox (center_x, center_y, width, height)  (normalized 0‑1)
+        //   4   : objectness score
+        //   5.. : class‑specific scores
+        // -----------------------------------------------------------------
+        const float objScore = detections.at<float>(i, 4);
+        if (objScore < CONF_THRESH)               // filter out low‑objectness boxes early
+            continue;
+
+        // Class scores start at column 5.
+        cv::Mat scores = detections.row(i).colRange(5, numChannels);
+        cv::Point maxClassIdx;
+        double   maxClassScore = 0.0;
+        cv::minMaxLoc(scores, nullptr, &maxClassScore, nullptr, &maxClassIdx);
+
+        const float confidence = static_cast<float>(objScore * maxClassScore);
+        if (confidence < CONF_THRESH)
+            continue;   // discard low‑confidence detections
+
+        int classId = maxClassIdx.x;   // zero‑based index into the model’s class list
+
+        // -----------------------------------------------------------------
+        // Decide whether this class is a weapon.
+        // -----------------------------------------------------------------
+        bool isWeapon = false;
+        if (!weaponClassIds.empty())
+        {
+            // If you supplied an explicit whitelist, check membership.
+            isWeapon = std::find(weaponClassIds.begin(),
+                                 weaponClassIds.end(),
+                                 classId) != weaponClassIds.end();
+        }
+        else
+        {
+            // No whitelist supplied – treat *any* detection as a threat.
+            isWeapon = true;
+        }
+
+        if (isWeapon)
+        {
+            // Optional: you could compute the actual pixel coordinates here
+            // (center_x * img.cols, etc.) and run NMS, but for a boolean
+            // result we can return immediately.
+            return true;
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // No detection satisfied our weapon criteria.
+    // -----------------------------------------------------------------
+    return false;
 }
 
 /* ------------------------------------------------------------------
@@ -179,15 +324,22 @@ private:
         std::istream body_stream(&buffer_);
         body_stream.read(body_.data(), static_cast<std::streamsize>(content_length_));
 
-        // -----------------------------------------------------------------
-        //  ***** INSERT YOUR OpenCV / Weapon‑Detection code here *****
-        // -----------------------------------------------------------------
-        // Example placeholder:
-        // cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
-        // bool threat = run_yolo(img);
         cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
-        bool threat = run_yolo(img);
-        // -----------------------------------------------------------------
+        bool threat = false;
+        try {
+            threat = run_yolo(img);
+        } catch (const cv::Exception& e) {
+            // Handle potential OpenCV runtime errors during detection
+            std::cerr << "OpenCV Error during run_yolo: " << e.what() << std::endl;
+            send_response("500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nImage processing error");
+            return;
+        } catch (const std::exception& e) {
+            // Handle other potential errors
+            std::cerr << "Detection Error: " << e.what() << std::endl;
+            send_response("500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nImage processing error");
+            return;
+        }
+        
 
         // For now just acknowledge receipt
         if (threat) {
