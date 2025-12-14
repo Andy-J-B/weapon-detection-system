@@ -1,5 +1,5 @@
 # Path to the dataset
-path: ../dataset # dataset root dir
+path: /Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/models/dataset/dataset # dataset root dir
 train: images/train # train images (relative to 'path') 4000 images
 val: images/val # val images (relative to 'path') 156 images
 test: # test images (optional)
