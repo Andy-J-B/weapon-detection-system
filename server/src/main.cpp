@@ -26,6 +26,7 @@
 #include <algorithm> // Used for algorithms to help with helper functions? like find_if_not
 #include <cctype> // character logic
 #include <sstream> // allow you to treat strings as streams, enabling you to perform formatted input and output operations on them
+#include "opencv2/core.hpp"
 
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
@@ -184,10 +185,20 @@ private:
         // Example placeholder:
         // cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
         // bool threat = run_yolo(img);
+        cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
+        bool threat = run_yolo(img);
         // -----------------------------------------------------------------
 
         // For now just acknowledge receipt
-        send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nImage received");
+        if (threat) {
+        // Respond with a status that indicates a threat was found (e.g., 200 OK with a specific body)
+        // Or, if this were an API designed to reject threats, a 403 Forbidden might be considered.
+        // Sticking to 200 OK for now, but making the body clear.
+        send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nTHREAT DETECTED!");
+    } else {
+        // Acknowledge receipt and successful processing
+        send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nImage processed. No threat detected.");
+    }
     }
 
     /* --------------------------------------------------------------
