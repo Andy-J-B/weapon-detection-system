@@ -19,13 +19,13 @@
 
 #include <boost/asio.hpp>
 #include <iostream>
-#include <memory>
+#include <memory> // Memory management, smart pointers
 #include <string>
-#include <unordered_map>
+#include <unordered_map> // O(1) lookup time dict
 #include <vector>
-#include <algorithm>
-#include <cctype>
-#include <sstream>
+#include <algorithm> // Used for algorithms to help with helper functions? like find_if_not
+#include <cctype> // character logic
+#include <sstream> // allow you to treat strings as streams, enabling you to perform formatted input and output operations on them
 
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
