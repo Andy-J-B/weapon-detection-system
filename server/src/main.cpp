@@ -52,7 +52,9 @@ static inline std::string trim(const std::string& s)
  *  AI - Runs 
  * ------------------------------------------------------------------ */
 bool run_yolo(cv::Mat& image) {
-    static const std::string modelPath = "best.onnx";   // <-- adjust to your exported ONNX file
+
+    std::cout << "Starting yolo inference\n";
+    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/best.onnx";   // <-- adjust to your exported ONNX file
     static const float CONF_THRESH = 0.35f;             // detection confidence (objectness × class‑score)
     static const float NMS_THRESH  = 0.45f;             // used only if you decide to keep boxes
     static const cv::Size INPUT_SIZE(640, 640); 
@@ -63,11 +65,14 @@ bool run_yolo(cv::Mat& image) {
     static cv::dnn::Net net;
     static bool netInitialized = false;
 
+
     if (!netInitialized)
     {
         try
         {
             net = cv::dnn::readNetFromONNX(modelPath);
+            std::cout << "✅ Loaded YOLO model from '" << modelPath << "' ("
+                  << net.getLayerNames().size() << " layers)\n";
             // Choose the backend that best fits your hardware.
             //   - CPU only: DNN_BACKEND_OPENCV + DNN_TARGET_CPU
             //   - CUDA (if available): DNN_BACKEND_CUDA + DNN_TARGET_CUDA
@@ -172,19 +177,23 @@ bool run_yolo(cv::Mat& image) {
             // No whitelist supplied – treat *any* detection as a threat.
             isWeapon = true;
         }
+        std::cout << "Deciding whether this is a weapon\n";
 
         if (isWeapon)
         {
             // Optional: you could compute the actual pixel coordinates here
             // (center_x * img.cols, etc.) and run NMS, but for a boolean
             // result we can return immediately.
+            std::cout << "Detected a weapon!"<< std::endl;
             return true;
+            
         }
     }
 
     // -----------------------------------------------------------------
     // No detection satisfied our weapon criteria.
     // -----------------------------------------------------------------
+    std::cout << "Didn't detect a weapon."<< std::endl;
     return false;
 }
 
