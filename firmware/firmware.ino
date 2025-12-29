@@ -2,26 +2,21 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-
 // ===========================
 // Select camera model in board_config.h
 // ===========================
 #include "board_config.h"
 
-// ===========================
-// Enter your WiFi credentials
-// ===========================
+// WiFi credentials
 const char *ssid = "Kevin";
 const char *password = "Cookie1207";
 
+// Constants
 const char *POST_URL = "http://10.0.0.135:8080/image";
-
 // Set interval for photo taking in ms
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
-// function declarations
-// void setupLedFlash();
 bool connectWifi();
 void sendPhoto();
 
@@ -61,27 +56,16 @@ void setup() {
   // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
   //                      for larger pre-allocated frame buffer.
   if (config.pixel_format == PIXFORMAT_JPEG) {
-    // if PSRAM IC present, init with the best quality/resolution for processing.
     if (psramFound()) {
-      // HIGH QUALITY, HIGH RESOLUTION:
-      // SXGA (1280x1024) is a great balance for detailed object detection.
       config.frame_size = FRAMESIZE_SXGA; 
-      config.jpeg_quality = 10;   // High quality (lower number = better quality, larger file)
-      config.fb_count = 1;        // 1 frame buffer is sufficient for synchronous snapshot-send cycle
-      
-      // CRITICAL: Remove/Avoid setting grab_mode to CAMERA_GRAB_LATEST.
-      // The default grab_mode (CAMERA_GRAB_WHEN_EMPTY) is better for single, synchronous snapshots.
-      
+      config.jpeg_quality = 10;
+      config.fb_count = 1;
     } else {
-      // Limit the frame size when PSRAM is not available (DRAM only)
-      // SVGA (800x600) is typically the highest safe resolution without PSRAM
       config.frame_size = FRAMESIZE_SVGA;
-      config.jpeg_quality = 12;           // Drop quality slightly to reduce size further
+      config.jpeg_quality = 12;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
-  
   } else {
-    // Best option for face detection/recognition
     config.frame_size = FRAMESIZE_240X240;
 #if CONFIG_IDF_TARGET_ESP32S3
     config.fb_count = 2;
@@ -120,7 +104,7 @@ void setup() {
 
 // Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
-  // setupLedFlash();
+
 #endif
 
   if (!connectWifi()) {
@@ -182,7 +166,6 @@ bool connectWifi()
 
 
 void sendPhoto () {
-
   if (WiFi.status() != WL_CONNECTED) {
     Serial.println("Wi‑Fi lost – trying to reconnect");
     if (!connectWifi()) {
@@ -191,10 +174,8 @@ void sendPhoto () {
     }
   }
 
-
   // Capture the image
   Serial.println("Capturing the image ...");
-
   camera_fb_t * camera_frame_buffer = NULL;
   camera_frame_buffer = esp_camera_fb_get();
 
@@ -203,18 +184,11 @@ void sendPhoto () {
     Serial.println("No frame buffer created, exiting program...");
     return;
   }
-
   Serial.printf("Photo captured. Size: %u bytes\n", camera_frame_buffer->len);
-
   HTTPClient http;
-
   // construct http post
   http.begin(POST_URL);
   http.addHeader("Content-Type", "image/jpeg");
-
-  Serial.print("Sending the POST request to :");
-  Serial.println(POST_URL);
-
   // send post request
   int httpResponseCode = http.POST(camera_frame_buffer->buf, camera_frame_buffer->len);
   // receive server response
@@ -226,11 +200,8 @@ void sendPhoto () {
   } else {
     Serial.printf("HTTP POST Failed! Error code: %d\n", httpResponseCode);
   }
-
   // Release the frame buffer to avoid memory leaks
   esp_camera_fb_return(camera_frame_buffer);
-
   // Close connection
-  http.end();
-  
+  http.end(); 
 }
