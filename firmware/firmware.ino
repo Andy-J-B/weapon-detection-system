@@ -33,15 +33,27 @@ static const char password[] = "Cookie1207";
 #define PCLK_GPIO_NUM  13
 
 const char *POST_URL = "http://10.0.0.135:8080/image";
-// Set interval for photo taking in ms
+
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
 static void initCamera();
-static bool connectWifi();
+static void connectWifi();
 static void sendPhoto();
 
 void setup() {
+  initCamera();
+  connectWifi();
+}
+
+void loop() {
+  if (millis() - lastPhotoTime >= photoInterval) {
+    lastPhotoTime = millis();
+    sendPhoto();
+  }
+}
+
+static void initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -63,8 +75,7 @@ void setup() {
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 20000000;
   config.frame_size = FRAMESIZE_UXGA;
-  config.pixel_format = PIXFORMAT_JPEG;  // for streaming
-  //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
+  config.pixel_format = PIXFORMAT_JPEG;
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = 12;
@@ -109,12 +120,6 @@ void setup() {
     s->set_saturation(s, -2);  // lower the saturation
   }
 
-
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-  s->set_vflip(s, 1);
-  s->set_hmirror(s, 1);
-#endif
-
 #if defined(CAMERA_MODEL_ESP32S3_EYE)
   s->set_vflip(s, 1);
 #endif
@@ -124,38 +129,19 @@ void setup() {
 
 #endif
 
-  if (!connectWifi()) {
-    Serial.println("Will keep trying later...");
 }
 
-}
-
-void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  unsigned long currentTime = millis();
-  
-  if (currentTime - lastPhotoTime >= photoInterval) {
-    lastPhotoTime = currentTime;
-    sendPhoto();
-  }
-
-
-}
-
-bool connectWifi()
+static void connectWifi()
 {
     // If we already have a connection – great.
     if (WiFi.status() == WL_CONNECTED) {
-        return true;
+        return;
     }
 
     // Make sure the driver is in STA mode and clear any old credentials.
     WiFi.disconnect(true);          // erase NVS stored credentials
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);           // keep the radio awake
-
-    Serial.print("Connecting to SSID: ");
-    Serial.println(ssid);
     WiFi.begin(ssid, password);    // **ONE** call only
 
     // Wait up to 20 s for a successful association.
@@ -163,60 +149,33 @@ bool connectWifi()
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
         delay(500);
-        Serial.print(".");
-    }
-    Serial.println();   // newline after the dots
-
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("Wi‑Fi connected");
-        Serial.print("IP address: ");
-        Serial.println(WiFi.localIP());
-        Serial.print("RSSI: ");
-        Serial.println(WiFi.RSSI());
-        return true;
     }
 
-    Serial.println("Wi‑Fi connection timed out.");
-    return false;
 }
 
 
 
-void sendPhoto () {
+static void sendPhoto () {
   if (WiFi.status() != WL_CONNECTED) {
-    Serial.println("Wi‑Fi lost – trying to reconnect");
-    if (!connectWifi()) {
-        Serial.println("Re‑connect failed – abort send");
-        return;      // abort this photo
+    connectWifi();
+    if (WiFi.status() != WL_CONNECTED) {
+        return;
     }
   }
 
-  // Capture the image
-  Serial.println("Capturing the image ...");
   camera_fb_t * camera_frame_buffer = NULL;
   camera_frame_buffer = esp_camera_fb_get();
 
   if (!camera_frame_buffer) {
-    Serial.println("Capuring image failed!");
-    Serial.println("No frame buffer created, exiting program...");
     return;
   }
-  Serial.printf("Photo captured. Size: %u bytes\n", camera_frame_buffer->len);
   HTTPClient http;
-  // construct http post
   http.begin(POST_URL);
   http.addHeader("Content-Type", "image/jpeg");
   // send post request
   int httpResponseCode = http.POST(camera_frame_buffer->buf, camera_frame_buffer->len);
   // receive server response
-  if (httpResponseCode > 0) {
-    Serial.printf("HTTP POST Success! Response code: %d\n", httpResponseCode);
-    String payload = http.getString();
-    Serial.print("Server Response: ");
-    Serial.println(payload);
-  } else {
-    Serial.printf("HTTP POST Failed! Error code: %d\n", httpResponseCode);
-  }
+
   // Release the frame buffer to avoid memory leaks
   esp_camera_fb_return(camera_frame_buffer);
   // Close connection
