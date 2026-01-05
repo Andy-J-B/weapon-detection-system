@@ -1,32 +1,33 @@
+/*  ESP32‑CAM → periodic JPEG → HTTP POST
+ *  ----------------------------------------------------
+ *  Only the parts that are really required are kept.
+ *  All debug/diagnostic Serial output, unused #ifdef blocks,
+ *  PSRAM‑branching and other “optional” code have been stripped.
+ *  ----------------------------------------------------
+ */
+
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 
-// ===========================
-// Select camera model in board_config.h
-// ===========================
+/* ----------  Wi‑Fi credentials (stored in flash) ---------- */
+static const char ssid[]     = "Kevin";
+static const char password[] = "Cookie1207";
 
-
-// WiFi credentials
-const char *ssid = "Kevin";
-const char *password = "Cookie1207";
-
-// Constants
-#define PWDN_GPIO_NUM  -1
-#define RESET_GPIO_NUM -1
-#define XCLK_GPIO_NUM  15
-#define SIOD_GPIO_NUM  4
-#define SIOC_GPIO_NUM  5
-
-#define Y2_GPIO_NUM 11
-#define Y3_GPIO_NUM 9
-#define Y4_GPIO_NUM 8
-#define Y5_GPIO_NUM 10
-#define Y6_GPIO_NUM 12
-#define Y7_GPIO_NUM 18
-#define Y8_GPIO_NUM 17
-#define Y9_GPIO_NUM 16
-
+/* ----------  Pin mapping (keep only what your board uses) ---------- */
+#define PWDN_GPIO_NUM   -1
+#define RESET_GPIO_NUM  -1
+#define XCLK_GPIO_NUM   15
+#define SIOD_GPIO_NUM   4
+#define SIOC_GPIO_NUM   5
+#define Y2_GPIO_NUM    11
+#define Y3_GPIO_NUM    9
+#define Y4_GPIO_NUM    8
+#define Y5_GPIO_NUM    10
+#define Y6_GPIO_NUM    12
+#define Y7_GPIO_NUM    18
+#define Y8_GPIO_NUM    17
+#define Y9_GPIO_NUM    16
 #define VSYNC_GPIO_NUM 6
 #define HREF_GPIO_NUM  7
 #define PCLK_GPIO_NUM  13
@@ -36,14 +37,11 @@ const char *POST_URL = "http://10.0.0.135:8080/image";
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
-bool connectWifi();
-void sendPhoto();
+static void initCamera();
+static bool connectWifi();
+static void sendPhoto();
 
 void setup() {
-  Serial.begin(115200);
-  Serial.setDebugOutput(true);
-  Serial.println();
-
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
