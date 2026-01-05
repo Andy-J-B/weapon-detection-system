@@ -1,5 +1,6 @@
 .vscode
 /server/build
+/firmware/secrets.h
 venv
 # Prerequisites
 *.d

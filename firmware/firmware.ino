@@ -9,10 +9,7 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
-
-/* ----------  Wi‑Fi credentials (stored in flash) ---------- */
-static const char ssid[]     = "Kevin";
-static const char password[] = "Cookie1207";
+#include "secrets.h"
 
 /* ----------  Pin mapping (keep only what your board uses) ---------- */
 #define PWDN_GPIO_NUM   -1
@@ -31,8 +28,6 @@ static const char password[] = "Cookie1207";
 #define VSYNC_GPIO_NUM 6
 #define HREF_GPIO_NUM  7
 #define PCLK_GPIO_NUM  13
-
-const char *POST_URL = "http://10.0.0.135:8080/image";
 
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
@@ -142,7 +137,7 @@ static void connectWifi()
     WiFi.disconnect(true);          // erase NVS stored credentials
     WiFi.mode(WIFI_STA);
     WiFi.setSleep(false);           // keep the radio awake
-    WiFi.begin(ssid, password);    // **ONE** call only
+    WiFi.begin(MY_SSID, MY_PASS);
 
     // Wait up to 20 s for a successful association.
     const unsigned long timeout = 20000;   // ms
