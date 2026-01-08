@@ -21,10 +21,6 @@
 #include "camera_index.h"
 #include "board_config.h"
 
-#if defined(ARDUINO_ARCH_ESP32) && defined(CONFIG_ARDUHAL_ESP_LOG)
-#include "esp32-hal-log.h"
-#endif
-
 // LED FLASH setup
 #if defined(LED_GPIO_NUM)
 #define CONFIG_LED_MAX_INTENSITY 255
