@@ -30,10 +30,10 @@ void setup() {
 }
 
 void loop() {
-  if (millis() - lastPhotoTime >= photoInterval) {
-    lastPhotoTime = millis();
-    // sendPhoto();
-  }
+  // if (millis() - lastPhotoTime >= photoInterval) {
+  //   lastPhotoTime = millis();
+  //   sendPhoto();
+  // }
   delay(10000);
 }
 
@@ -96,6 +96,22 @@ static void initCamera() {
     return;
   }
 
+  sensor_t *s = esp_camera_sensor_get();
+  // initial sensors are flipped vertically and colors are a bit saturated
+  if (s->id.PID == OV3660_PID) {
+    s->set_vflip(s, 1);        // flip it back
+    s->set_brightness(s, 1);   // up the brightness just a bit
+    s->set_saturation(s, -2);  // lower the saturation
+  }
+  // drop down frame size for higher initial frame rate
+  if (config.pixel_format == PIXFORMAT_JPEG) {
+    s->set_framesize(s, FRAMESIZE_QVGA);
+  }
+
+#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
+  s->set_vflip(s, 1);
+  s->set_hmirror(s, 1);
+#endif
 
 #if defined(CAMERA_MODEL_ESP32S3_EYE)
   s->set_vflip(s, 1);
@@ -103,9 +119,8 @@ static void initCamera() {
 
 // Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
-
+  setupLedFlash();
 #endif
-
 }
 
 static void connectWifi()
