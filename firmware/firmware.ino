@@ -43,6 +43,10 @@ void setup() {
   initWebServer();
 }
 
+
+  /* ---- FreeRTOS primitives ------------------------------------------------ */
+cameraMutex  = xSemaphoreCreateMutex();
+
 void loop() {
   if (millis() - lastPhotoTime >= photoInterval) {
     lastPhotoTime = millis();
@@ -178,7 +182,10 @@ static void sendPhoto () {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
     if (WiFi.status() != WL_CONNECTED) {
-        return;
+        if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+            Serial.println("❌ sendPhoto: could not lock camera");
+            return;
+        }
     }
   }
 
@@ -187,7 +194,7 @@ static void sendPhoto () {
 
   if (!camera_frame_buffer) {
     Serial.println("❌ sendPhoto: camera capture failed");
-    xSemaphoreGive(cameraMutex)
+    xSemaphoreGive(cameraMutex);
 
     
     return;
@@ -201,8 +208,11 @@ static void sendPhoto () {
   // receive server response
 
 
+
   // Release the frame buffer to avoid memory leaks
   esp_camera_fb_return(camera_frame_buffer);
   // Close connection
   http.end(); 
+  esp_camera_fb_return(camera_frame_buffer);
+  xSemaphoreGive(cameraMutex);
 }
