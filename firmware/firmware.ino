@@ -30,6 +30,19 @@
 const int photoInterval = 10000; // 10 seconds
 unsigned long lastPhotoTime = 0;
 
+/* --------------------------  FreeRTOS objects  ------------------- */
+typedef struct {
+  camera_fb_t *camera_frame_buffer;          // pointer to the camera frame buffer
+  uint32_t     timestamp;  // when it was captured (ms since boot)
+} frame_item_t;
+
+static QueueHandle_t   frameQueue   = nullptr; // frames for SD writer
+static SemaphoreHandle_t sdMutex     = nullptr; // protect SD card
+static SemaphoreHandle_t cameraMutex = nullptr; // exclusive camera access
+static SemaphoreHandle_t captureSem  = nullptr; // user-requested photo
+
+static WebServer server(80);
+
 static void initCamera();
 static void connectWifi();
 static void sendPhoto();
@@ -41,11 +54,32 @@ void setup() {
   initCamera();
   connectWifi();
   initWebServer();
-}
-
 
   /* ---- FreeRTOS primitives ------------------------------------------------ */
-cameraMutex  = xSemaphoreCreateMutex();
+  frameQueue = xQueueCreate(5, sizeof(frame_item_t));
+  sdMutex = xSemaphoreCreateMutex();
+  cameraMutex = xSemaphoreCreateMutex();
+  captureSem = xSemaphoreCreateBinary();
+
+  /* ---- Tasks -------------------------------------------------------------- */
+  // Core‑0 (lower priority) – captures on‑demand
+  xTaskCreatePinnedToCore(cameraCaptureTask,
+                          "CamCap",
+                          4096,
+                          nullptr,
+                          2,
+                          nullptr,
+                          0);
+
+  // Core‑1 (higher priority) – writes frames to SD
+  xTaskCreatePinnedToCore(sdWriterTask,
+                          "SDWrite",
+                          8192,
+                          nullptr,
+                          2,
+                          nullptr,
+                          1);
+}
 
 void loop() {
   if (millis() - lastPhotoTime >= photoInterval) {
@@ -182,12 +216,14 @@ static void sendPhoto () {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
     if (WiFi.status() != WL_CONNECTED) {
-        if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-            Serial.println("❌ sendPhoto: could not lock camera");
-            return;
-        }
-    }
+        return;
+    }    
   }
+  if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      Serial.println("❌ sendPhoto: could not lock camera");
+      return;
+  }
+  
 
   camera_fb_t * camera_frame_buffer = NULL;
   camera_frame_buffer = esp_camera_fb_get();
