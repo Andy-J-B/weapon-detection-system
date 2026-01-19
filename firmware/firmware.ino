@@ -5,6 +5,8 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WebServer.h>
+#include "FS.h"
+#include "SD_MMC.h"
 #include "secrets.h"
 
 /* ----------  Pin mapping ---------- */
@@ -184,6 +186,10 @@ static void sendPhoto () {
   camera_frame_buffer = esp_camera_fb_get();
 
   if (!camera_frame_buffer) {
+    Serial.println("❌ sendPhoto: camera capture failed");
+    xSemaphoreGive(cameraMutex)
+
+    
     return;
   }
   HTTPClient http;
@@ -191,7 +197,9 @@ static void sendPhoto () {
   http.addHeader("Content-Type", "image/jpeg");
   // send post request
   int httpResponseCode = http.POST(camera_frame_buffer->buf, camera_frame_buffer->len);
+  Serial.printf("POST code: %d, size: %u bytes\n", httpResponseCode, camera_frame_buffer->len);
   // receive server response
+
 
   // Release the frame buffer to avoid memory leaks
   esp_camera_fb_return(camera_frame_buffer);
