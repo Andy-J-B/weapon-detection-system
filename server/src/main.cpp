@@ -54,9 +54,9 @@ static inline std::string trim(const std::string& s)
 bool run_yolo(cv::Mat& image) {
 
     std::cout << "Starting yolo inference\n";
-    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/best.onnx";   // <-- adjust to your exported ONNX file
+    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/best.onnx";
     static const float CONF_THRESH = 0.35f;             // detection confidence (objectness × class‑score)
-    static const float NMS_THRESH  = 0.45f;             // used only if you decide to keep boxes
+    static const float NMS_THRESH  = 0.45f;       
     static const cv::Size INPUT_SIZE(640, 640); 
 
     // 0 : knife, 1 : handgun

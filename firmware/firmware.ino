@@ -1,9 +1,4 @@
-/*  ESP32‑CAM → periodic JPEG → HTTP POST
- *  ----------------------------------------------------
- *  Only the parts that are really required are kept.
- *  All debug/diagnostic Serial output, unused #ifdef blocks,
- *  PSRAM‑branching and other “optional” code have been stripped.
- *  ----------------------------------------------------
+/*  ESP32‑CAM
  */
 
 #include "esp_camera.h"
