@@ -45,6 +45,7 @@ static WebServer server(80);
 
 static void initCamera();
 static void connectWifi();
+static void initSDCard();
 static void sendPhoto();
 static void initWebServer();
 
@@ -53,6 +54,7 @@ void setup() {
   delay(500);
   initCamera();
   connectWifi();
+  initSDCard();
   initWebServer();
 
   /* ---- FreeRTOS primitives ------------------------------------------------ */
@@ -86,6 +88,7 @@ void loop() {
     lastPhotoTime = millis();
     sendPhoto();
   }
+  server.handleClient();
 }
 
 static void initCamera() {
@@ -184,10 +187,25 @@ static void connectWifi()
     unsigned long start = millis();
     while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
         delay(500);
+        Serial.print('.');
     }
 
+    Serial.println();
+    Serial.print("Wi‑Fi ");
+    Serial.println(WiFi.isConnected() ? "connected" : "failed");
 }
 
+static void initSDCard() {
+    Serial.println("Mounting SD Card...");
+
+    if (!SD_MMC.begin("sdcard", true)) {
+        Serial.println("SD Card mount failed.");
+        return;
+    }
+    
+  uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
+  Serial.printf("✅ SD Card mounted, size: %llu MiB\n", cardSize);    
+}
 
 static void initWebServer() {
   server.on("/", HTTP_GET, []() {
@@ -216,14 +234,14 @@ static void sendPhoto () {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
     if (WiFi.status() != WL_CONNECTED) {
+        return;}
+        
+  }
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        Serial.println("❌ sendPhoto: could not lock camera");
         return;
-    }    
+    }
   }
-  if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-      Serial.println("❌ sendPhoto: could not lock camera");
-      return;
-  }
-  
 
   camera_fb_t * camera_frame_buffer = NULL;
   camera_frame_buffer = esp_camera_fb_get();
