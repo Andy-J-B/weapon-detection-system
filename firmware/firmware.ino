@@ -202,9 +202,9 @@ static void initSDCard() {
         Serial.println("SD Card mount failed.");
         return;
     }
-    
+
   uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-  Serial.printf("✅ SD Card mounted, size: %llu MiB\n", cardSize);    
+  Serial.printf("SD Card mounted, size: %llu MiB\n", cardSize);    
 }
 
 static void initWebServer() {
@@ -236,9 +236,9 @@ static void sendPhoto () {
     if (WiFi.status() != WL_CONNECTED) {
         return;}
         
-  }
+  
     if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        Serial.println("❌ sendPhoto: could not lock camera");
+        Serial.println("sendPhoto: could not lock camera");
         return;
     }
   }
@@ -247,7 +247,7 @@ static void sendPhoto () {
   camera_frame_buffer = esp_camera_fb_get();
 
   if (!camera_frame_buffer) {
-    Serial.println("❌ sendPhoto: camera capture failed");
+    Serial.println("sendPhoto: camera capture failed");
     xSemaphoreGive(cameraMutex);
 
     
@@ -269,4 +269,77 @@ static void sendPhoto () {
   http.end(); 
   esp_camera_fb_return(camera_frame_buffer);
   xSemaphoreGive(cameraMutex);
+}
+
+static void cameraCaptureTask(void *pvParameters) {
+  for (;;) {
+    // Wait until user wants picture
+    if (xSemaphoreTake(captureSem, portMAX_DELAY) != pdTRUE) continue;
+
+    // Grab the camera (mutex)
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      Serial.println("CamTask: could not lock camera");
+      continue;
+    }
+
+    camera_fb_t *fb = esp_camera_fb_get();
+
+    // Return the mutex as soon as we have the buffer 
+    xSemaphoreGive(cameraMutex);
+
+    if (!fb) {
+      Serial.println("CamTask: capture failed");
+      continue;
+    }
+
+    // Prepare item for the queue
+    frame_item_t item;
+    item.fb = fb;
+    item.timestamp = millis();
+
+    // Enqueue – if full we simply drop the frame (after returning it)
+    if (xQueueSend(frameQueue, &item, pdMS_TO_TICKS(1000)) != pdTRUE) {
+      Serial.println("CamTask: frameQueue full → dropping frame");
+      esp_camera_fb_return(fb);
+    } else {
+      Serial.println("CamTask: frame queued for SD");
+    }
+  }
+  // vTaskDelete(nullptr);  // never reached
+}
+
+static void sdWriterTask(void *pvParameters) {
+  for (;;) {
+    frame_item_t item;
+
+    // Wait for a frame (blocks indefinitely)
+    if (xQueueReceive(frameQueue, &item, portMAX_DELAY) != pdTRUE) continue;
+
+    // Build a unique filename: img_0001234567.jpg
+    char path[64];
+    snprintf(path, sizeof(path), "/sdcard/img_%010lu.jpg", item.timestamp);
+
+    // Protect the SD MMC peripheral while a file is open
+    if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
+      Serial.println("SDTask: could not lock SD card");
+      esp_camera_fb_return(item.fb);
+      continue;
+    }
+
+    File file = SD_MMC.open(path, FILE_WRITE);
+    if (!file) {
+      Serial.printf("SDTask: cannot open %s for writing\n", path);
+      xSemaphoreGive(sdMutex);
+      esp_camera_fb_return(item.fb);
+      continue;
+    }
+
+    // Write **directly** from the camera buffer (no copy!)
+    size_t written = file.write(item.fb->buf, item.fb->len);
+    file.close();
+
+    Serial.printf("SDTask: %u bytes written to %s\n", written, path);
+    xSemaphoreGive(sdMutex);
+    esp_camera_fb_return(item.fb);
+  }
 }
