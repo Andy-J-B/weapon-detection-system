@@ -1,4 +1,4 @@
-/*  ESP32‑CAM Weapon Detection System
+/*  ESP32‑CAM
  */
 
 #include "esp_camera.h"
@@ -52,6 +52,7 @@ static void initWebServer();
 static void cameraCaptureTask(void *pvParameters);
 static void sdWriterTask(void *pvParameters);
 
+/* ----------------------------------------------------------------------- */
 void setup() {
   Serial.begin(115200);
   delay(500);
@@ -82,6 +83,7 @@ void setup() {
                           1);
 }
 
+/* ----------------------------------------------------------------------- */
 void loop() {
   if (millis() - lastPhotoTime >= photoInterval) {
     lastPhotoTime = millis();
@@ -90,6 +92,7 @@ void loop() {
   server.handleClient();
 }
 
+/* ----------------------------------------------------------------------- */
 static void initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -142,7 +145,7 @@ static void initCamera() {
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
     return;
   }
 
@@ -158,6 +161,7 @@ static void initCamera() {
 #endif
 }
 
+/* ----------------------------------------------------------------------- */
 static void connectWifi()
 {
     if (WiFi.status() == WL_CONNECTED) {
@@ -177,17 +181,16 @@ static void connectWifi()
     }
 
     Serial.println();
-    Serial.print("Wi‑Fi ");
-    Serial.println(WiFi.isConnected() ? "connected" : "failed");
-
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.print("Camera IP address: ");
-      Serial.println(WiFi.localIP());
-
-      return;
+    if (WiFi.isConnected()) {
+        Serial.println("Wi‑Fi connected");
+        Serial.print("Camera IP address: ");
+        Serial.println(WiFi.localIP());
+    } else {
+        Serial.println("Wi‑Fi failed to connect");
     }
 }
 
+/* ----------------------------------------------------------------------- */
 static void initSDCard() {
     Serial.println("Mounting SD Card...");
 
@@ -200,30 +203,91 @@ static void initSDCard() {
     Serial.printf("SD Card mounted, size: %llu MiB\n", cardSize);
 }
 
+/* ----------------------------------------------------------------------- */
 static void initWebServer() {
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/plain", "ESP32-CAM Weapon-Detection - GET /save to store a picture onto sd card");
+    const char html[] PROGMEM = R"=====(
+<!DOCTYPE html>
+<html>
+<head><title>ESP32‑CAM Live</title></head>
+<body>
+<h1>Camera Live Stream</h1>
+<img src="/stream" style="width:100%;max-width:640px;">
+<p>
+<a href="/snapshot">Snapshot</a> |
+<a href="/save">Save to SD</a>
+</p>
+</body>
+</html>
+)=====";
+    server.send(200, "text/html", html);
   });
+
+  server.on("/snapshot", HTTP_GET, []() {
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+        server.send(503, "text/plain", "Camera busy");
+        return;
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    xSemaphoreGive(cameraMutex);
+    if (!fb) {
+        server.send(500, "text/plain", "Capture failed");
+        return;
+    }
+    server.sendHeader("Content-Type", "image/jpeg");
+    server.sendHeader("Content-Length", String(fb->len));
+    server.client().write(fb->buf, fb->len);
+    esp_camera_fb_return(fb);
+  });
+
+  server.on("/stream", HTTP_GET, []() {
+    WiFiClient client = server.client();
+    String header = "HTTP/1.1 200 OK\r\n"
+                    "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
+    client.print(header);
+    while (client.connected()) {
+        if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+            break;
+        }
+        camera_fb_t *fb = esp_camera_fb_get();
+        xSemaphoreGive(cameraMutex);
+        if (!fb) {
+            break;
+        }
+        client.print("--frame\r\n");
+        client.print("Content-Type: image/jpeg\r\n");
+        client.print("Content-Length: ");
+        client.print(fb->len);
+        client.print("\r\n\r\n");
+        client.write(fb->buf, fb->len);
+        client.print("\r\n");
+        esp_camera_fb_return(fb);
+        delay(100); // ~10 fps, adjust as needed
+    }
+  });
+
   server.on("/save", HTTP_GET, []() {
     BaseType_t higher = pdFALSE;
     if (xSemaphoreGiveFromISR(captureSem, &higher) == pdTRUE) {
-      if (higher == pdTRUE) portYIELD_FROM_ISR();
-      server.send(200, "application/json", "{\"status\":\"capture_queued\"}");
+        if (higher == pdTRUE) portYIELD_FROM_ISR();
+        server.send(200, "application/json", "{\"status\":\"capture_queued\"}");
     } else {
-      server.send(500, "application/json", "{\"error\":\"queue_full_or_semaphore_error\"}");
+        server.send(500, "application/json", "{\"error\":\"queue_full_or_semaphore_error\"}");
     }
   });
+
   server.onNotFound([]() {
     server.send(404, "text/plain", "Not Found");
   });
+
   server.begin();
   Serial.println("HTTP server started – listen on port 80");
 }
 
+/* ----------------------------------------------------------------------- */
 static void sendPhoto () {
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
-
     if (WiFi.status() != WL_CONNECTED) {
       return;
     }
@@ -253,6 +317,7 @@ static void sendPhoto () {
   xSemaphoreGive(cameraMutex);
 }
 
+/* ----------------------------------------------------------------------- */
 static void cameraCaptureTask(void *pvParameters) {
   for (;;) {
     if (xSemaphoreTake(captureSem, portMAX_DELAY) != pdTRUE) continue;
@@ -284,10 +349,10 @@ static void cameraCaptureTask(void *pvParameters) {
   }
 }
 
+/* ----------------------------------------------------------------------- */
 static void sdWriterTask(void *pvParameters) {
   for (;;) {
     frame_item_t item;
-
     if (xQueueReceive(frameQueue, &item, portMAX_DELAY) != pdTRUE) continue;
 
     char path[64];
