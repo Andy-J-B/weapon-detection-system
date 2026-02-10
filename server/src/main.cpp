@@ -9,12 +9,6 @@
  *  Hook OpenCV processing after the body has been collected
  *  (see comment in extract_body()).
  *
- *  Build (Linux/macOS):
- *      g++ -std=c++14 -O2 -Wall -Wextra -lboost_system -lpthread \
- *          -o esp32_server esp32_server.cpp
- *
- *  Requires Boost (>=1.66 for std::make_shared with asio) and a C++11+
- *  compiler.
  ********************************************************************/
 
 #include <boost/asio.hpp>
@@ -402,7 +396,7 @@ private:
     std::string                       http_version_;
     std::unordered_map<std::string,std::string> headers_;
     std::size_t                       content_length_ = 0;
-    const std::size_t                 max_body_size_ = 512 * 1024; // 512 KB limit
+    const std::size_t                 max_body_size_ = 2 * 1024 * 1024;
     std::vector<char>                 body_;            // final JPEG payload
 };
 

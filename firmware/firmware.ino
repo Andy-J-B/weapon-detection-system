@@ -8,6 +8,7 @@
 #include "FS.h"
 #include "SD_MMC.h"
 #include "secrets.h"
+#include "sd_read_write.h"
 
 /* ----------  Pin mapping ---------- */
 #define PWDN_GPIO_NUM   -1
@@ -46,8 +47,7 @@ static WebServer server(80);
 /* forward declarations */
 static void initCamera();
 static void connectWifi();
-static void initSDCard();
-static void sendPhoto();
+static void sendPhotoToServer();
 static void initWebServer();
 static void cameraCaptureTask(void *pvParameters);
 static void sdWriterTask(void *pvParameters);
@@ -58,7 +58,11 @@ void setup() {
   delay(500);
   initCamera();
   connectWifi();
-  initSDCard();
+
+  sdmmcInit();
+  removeDir(SD_MMC, "/camera");
+  createDir(SD_MMC, "/camera");
+
   initWebServer();
 
   frameQueue = xQueueCreate(5, sizeof(frame_item_t));
@@ -87,7 +91,7 @@ void setup() {
 void loop() {
   if (millis() - lastPhotoTime >= photoInterval) {
     lastPhotoTime = millis();
-    sendPhoto();
+    sendPhotoToServer();
   }
   server.handleClient();
 }
@@ -113,30 +117,15 @@ static void initCamera() {
   config.pin_sccb_scl = SIOC_GPIO_NUM;
   config.pin_pwdn     = PWDN_GPIO_NUM;
   config.pin_reset    = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
-  config.frame_size   = FRAMESIZE_UXGA;
-  config.pixel_format = PIXFORMAT_JPEG;
-  config.grab_mode    = CAMERA_GRAB_WHEN_EMPTY;
-  config.fb_location  = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
-  config.fb_count     = 1;
 
-  if (config.pixel_format == PIXFORMAT_JPEG) {
-    if (psramFound()) {
-      config.frame_size = FRAMESIZE_SXGA;
-      config.jpeg_quality = 10;
-      config.fb_count = 1;
-    } else {
-      config.frame_size = FRAMESIZE_SVGA;
-      config.jpeg_quality = 12;
-      config.fb_location = CAMERA_FB_IN_DRAM;
-    }
-  } else {
-    config.frame_size = FRAMESIZE_240X240;
-#if CONFIG_IDF_TARGET_ESP32S3
-    config.fb_count = 2;
-#endif
-  }
+  config.xclk_freq_hz = 20000000;
+  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size   = FRAMESIZE_SVGA;
+  config.jpeg_quality = 12;
+  config.grab_mode    = CAMERA_GRAB_LATEST;
+  config.fb_location  = CAMERA_FB_IN_PSRAM;
+  config.fb_count     = 3;
+
 
 #if defined(CAMERA_MODEL_ESP_EYE)
   pinMode(13, INPUT_PULLUP);
@@ -191,53 +180,44 @@ static void connectWifi()
 }
 
 /* ----------------------------------------------------------------------- */
-static void initSDCard() {
-    Serial.println("Mounting SD Card...");
-
-    if (!SD_MMC.begin("sdcard", true)) {
-        Serial.println("SD Card mount failed.");
-        return;
-    }
-
-    uint64_t cardSize = SD_MMC.cardSize() / (1024 * 1024);
-    Serial.printf("SD Card mounted, size: %llu MiB\n", cardSize);
-}
-
-/* ----------------------------------------------------------------------- */
 static void initWebServer() {
   server.on("/", HTTP_GET, []() {
     const char html[] PROGMEM = R"=====(
-<!DOCTYPE html>
-<html>
-<head><title>ESP32‑CAM Live</title></head>
-<body>
-<h1>Camera Live Stream</h1>
-<img src="/stream" style="width:100%;max-width:640px;">
-<p>
-<a href="/snapshot">Snapshot</a> |
-<a href="/save">Save to SD</a>
-</p>
-</body>
-</html>
+    <!DOCTYPE html>
+    <html>
+      <head><title>ESP32‑CAM Live</title></head>
+      <body>
+        <h1>Camera Live Stream</h1>
+        <img src="/stream" style="width:100%;max-width:640px;">
+        <p>
+        <a href="/snapshot">Snapshot</a> |
+        <a href="/save">Save to SD</a>
+        </p>
+      </body>
+    </html>
 )=====";
     server.send(200, "text/html", html);
   });
 
   server.on("/snapshot", HTTP_GET, []() {
-    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-        server.send(503, "text/plain", "Camera busy");
+    if (xSemaphoreTake(cameraMutex, 0) != pdTRUE) {
+        Serial.println("Camera busy - lock denied.");
+        server.send(503, "text/plain", "Camera Busy");
         return;
     }
+
     camera_fb_t *fb = esp_camera_fb_get();
-    xSemaphoreGive(cameraMutex);
     if (!fb) {
-        server.send(500, "text/plain", "Capture failed");
-        return;
+      server.send(500, "text/plain", "Capture failed");
+      xSemaphoreGive(cameraMutex);
+      return;
     }
+
     server.sendHeader("Content-Type", "image/jpeg");
     server.sendHeader("Content-Length", String(fb->len));
     server.client().write(fb->buf, fb->len);
     esp_camera_fb_return(fb);
+    xSemaphoreGive(cameraMutex);
   });
 
   server.on("/stream", HTTP_GET, []() {
@@ -262,17 +242,15 @@ static void initWebServer() {
         client.write(fb->buf, fb->len);
         client.print("\r\n");
         esp_camera_fb_return(fb);
-        delay(100); // ~10 fps, adjust as needed
+        delay(100); 
     }
   });
 
   server.on("/save", HTTP_GET, []() {
-    BaseType_t higher = pdFALSE;
-    if (xSemaphoreGiveFromISR(captureSem, &higher) == pdTRUE) {
-        if (higher == pdTRUE) portYIELD_FROM_ISR();
+    if (xSemaphoreGive(captureSem) == pdTRUE) {
         server.send(200, "application/json", "{\"status\":\"capture_queued\"}");
     } else {
-        server.send(500, "application/json", "{\"error\":\"queue_full_or_semaphore_error\"}");
+        server.send(429, "application/json", "{\"error\":\"capture_already_in_progress\"}");
     }
   });
 
@@ -285,7 +263,8 @@ static void initWebServer() {
 }
 
 /* ----------------------------------------------------------------------- */
-static void sendPhoto () {
+static void sendPhotoToServer () {
+
   if (WiFi.status() != WL_CONNECTED) {
     connectWifi();
     if (WiFi.status() != WL_CONNECTED) {
@@ -294,14 +273,14 @@ static void sendPhoto () {
   }
 
   if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-    Serial.println("sendPhoto: could not lock camera");
+    Serial.println("sendPhotoToServer: could not lock camera");
     return;
   }
 
   camera_fb_t *camera_frame_buffer = esp_camera_fb_get();
 
   if (!camera_frame_buffer) {
-    Serial.println("sendPhoto: camera capture failed");
+    Serial.println("sendPhotoToServer: camera capture failed");
     xSemaphoreGive(cameraMutex);
     return;
   }
@@ -355,27 +334,24 @@ static void sdWriterTask(void *pvParameters) {
     frame_item_t item;
     if (xQueueReceive(frameQueue, &item, portMAX_DELAY) != pdTRUE) continue;
 
-    char path[64];
-    snprintf(path, sizeof(path), "/sdcard/img_%010lu.jpg", (unsigned long)item.timestamp);
-
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
       Serial.println("SDTask: could not lock SD card");
       esp_camera_fb_return(item.camera_frame_buffer);
       continue;
     }
 
-    File file = SD_MMC.open(path, FILE_WRITE);
-    if (!file) {
-      Serial.printf("SDTask: cannot open %s for writing\n", path);
+    int photo_index = readFileNum(SD_MMC, "/camera");
+    if (photo_index == -1) {
+      Serial.println("Save to sd card failed.");
       xSemaphoreGive(sdMutex);
       esp_camera_fb_return(item.camera_frame_buffer);
       continue;
     }
 
-    size_t written = file.write(item.camera_frame_buffer->buf, item.camera_frame_buffer->len);
-    file.close();
+    String path = "/camera/" + String(photo_index) + ".jpg";
+    writejpg(SD_MMC, path.c_str(), item.camera_frame_buffer->buf, item.camera_frame_buffer->len);
 
-    Serial.printf("SDTask: %u bytes written to %s\n", written, path);
+    Serial.printf("SDTask: %u bytes written to %s\n", item.camera_frame_buffer->len, path);
     xSemaphoreGive(sdMutex);
     esp_camera_fb_return(item.camera_frame_buffer);
   }
