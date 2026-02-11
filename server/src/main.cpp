@@ -15,11 +15,11 @@
 #include <iostream>
 #include <memory> // Memory management, smart pointers
 #include <string>
-#include <unordered_map> // O(1) lookup time dict
+#include <unordered_map>
 #include <vector>
 #include <algorithm> // Used for algorithms to help with helper functions? like find_if_not
 #include <cctype> // character logic
-#include <sstream> // allow you to treat strings as streams, enabling you to perform formatted input and output operations on them
+#include <sstream> //  treat strings as streams, enabling performing formatted input and output operations on them
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -30,9 +30,7 @@
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
 
-/* ------------------------------------------------------------------
- *  Helper – trim whitespace from both ends of a string.
- * ------------------------------------------------------------------ */
+/* Helper – trim whitespace from both ends of a string. */
 static inline std::string trim(const std::string& s)
 {
     auto start = std::find_if_not(s.begin(), s.end(),
@@ -42,9 +40,7 @@ static inline std::string trim(const std::string& s)
     return (start < end) ? std::string(start, end) : std::string{};
 }
 
-/* ------------------------------------------------------------------
- *  AI - Runs 
- * ------------------------------------------------------------------ */
+/* AI - Runs  */
 bool run_yolo(cv::Mat& image) {
 
     std::cout << "Starting yolo inference\n";
@@ -67,9 +63,6 @@ bool run_yolo(cv::Mat& image) {
             net = cv::dnn::readNetFromONNX(modelPath);
             std::cout << "✅ Loaded YOLO model from '" << modelPath << "' ("
                   << net.getLayerNames().size() << " layers)\n";
-            // Choose the backend that best fits your hardware.
-            //   - CPU only: DNN_BACKEND_OPENCV + DNN_TARGET_CPU
-            //   - CUDA (if available): DNN_BACKEND_CUDA + DNN_TARGET_CUDA
             net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
             net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
             netInitialized = true;
@@ -128,17 +121,8 @@ bool run_yolo(cv::Mat& image) {
     // Create a view that treats the data as a matrix of [N x C] floats.
     cv::Mat detections(numDetections, numChannels, CV_32F, preds.ptr<float>());
 
-    // --------------------------------------------------------------
-    // 5️⃣  Scan detections – as soon as we see a weapon we can stop.
-    // --------------------------------------------------------------
     for (int i = 0; i < numDetections; ++i)
     {
-        // -----------------------------------------------------------------
-        // YOLO layout (per row):
-        //   0‑3 : bbox (center_x, center_y, width, height)  (normalized 0‑1)
-        //   4   : objectness score
-        //   5.. : class‑specific scores
-        // -----------------------------------------------------------------
         const float objScore = detections.at<float>(i, 4);
         if (objScore < CONF_THRESH)               // filter out low‑objectness boxes early
             continue;
@@ -154,10 +138,8 @@ bool run_yolo(cv::Mat& image) {
             continue;   // discard low‑confidence detections
 
         int classId = maxClassIdx.x;   // zero‑based index into the model’s class list
-
-        // -----------------------------------------------------------------
-        // Decide whether this class is a weapon.
-        // -----------------------------------------------------------------
+        
+        // Decide whether there's a weapon detected
         bool isWeapon = false;
         if (!weaponClassIds.empty())
         {
@@ -175,26 +157,20 @@ bool run_yolo(cv::Mat& image) {
 
         if (isWeapon)
         {
-            // Optional: you could compute the actual pixel coordinates here
-            // (center_x * img.cols, etc.) and run NMS, but for a boolean
-            // result we can return immediately.
             std::cout << "Detected a weapon!"<< std::endl;
             return true;
             
         }
     }
-
-    // -----------------------------------------------------------------
-    // No detection satisfied our weapon criteria.
-    // -----------------------------------------------------------------
+    // No Detection
     std::cout << "Didn't detect a weapon."<< std::endl;
     return false;
 }
 
-/* ------------------------------------------------------------------
+/* 
  *  Session – one client connection.
  *  Handles: header → body → response.
- * ------------------------------------------------------------------ */
+ */
 class session : public std::enable_shared_from_this<session>
 {
 public:
@@ -205,9 +181,6 @@ public:
     void start() { read_header(); }
 
 private:
-    /* --------------------------------------------------------------
-     *  1. Read the HTTP header until the blank line (CRLFCRLF)
-     * -------------------------------------------------------------- */
     void read_header()
     {
         auto self = shared_from_this();
@@ -221,9 +194,6 @@ private:
             });
     }
 
-    /* --------------------------------------------------------------
-     *  2. Parse request line + headers, locate Content‑Length.
-     * -------------------------------------------------------------- */
     void parse_header(std::size_t /*bytes_transferred*/)
     {
         std::istream request_stream(&buffer_);
@@ -289,9 +259,6 @@ private:
         send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nReady");
     }
 
-    /* --------------------------------------------------------------
-     *  3. Read the POST body (the JPEG image)
-     * -------------------------------------------------------------- */
     void read_body()
     {
         // The streambuf may already contain part or all of the body
@@ -316,10 +283,6 @@ private:
                          });
     }
 
-    /* --------------------------------------------------------------
-     *  4. Pull the JPEG bytes out of the streambuf into a vector.
-     *  This is the place to hand the data to OpenCV.
-     * -------------------------------------------------------------- */
     void extract_body()
     {
         // Move the payload into a contiguous vector
@@ -346,9 +309,6 @@ private:
 
         // For now just acknowledge receipt
         if (threat) {
-        // Respond with a status that indicates a threat was found (e.g., 200 OK with a specific body)
-        // Or, if this were an API designed to reject threats, a 403 Forbidden might be considered.
-        // Sticking to 200 OK for now, but making the body clear.
         send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nTHREAT DETECTED!");
     } else {
         // Acknowledge receipt and successful processing
@@ -356,9 +316,7 @@ private:
     }
     }
 
-    /* --------------------------------------------------------------
-     *  5. Send a minimal HTTP response and close the socket.
-     * -------------------------------------------------------------- */
+
     void send_response(const std::string& status_and_headers)
     {
         // Always terminate with an empty line (CRLF) to finish the header block
@@ -374,11 +332,6 @@ private:
                               close_socket();
                           });
     }
-
-    /* --------------------------------------------------------------
-     *  Close the socket – the session object will be destroyed
-     *  automatically when the last shared_ptr goes out of scope.
-     * -------------------------------------------------------------- */
     void close_socket()
     {
         boost::system::error_code ignored_ec;
@@ -386,9 +339,6 @@ private:
         socket_.close(ignored_ec);
     }
 
-    /* ----------------------------------------------------------------
-     *  Member data
-     * ---------------------------------------------------------------- */
     tcp::socket                       socket_;
     asio::streambuf                   buffer_;          // header + body (partial)
     std::string                       method_;
@@ -400,9 +350,9 @@ private:
     std::vector<char>                 body_;            // final JPEG payload
 };
 
-/* ------------------------------------------------------------------
+/* 
  *  Server – accepts new connections and spawns a session for each.
- * ------------------------------------------------------------------ */
+ */
 class server
 {
 public:
@@ -432,9 +382,6 @@ private:
     tcp::acceptor acceptor_;
 };
 
-/* ------------------------------------------------------------------
- *  main() – entry point.
- * ------------------------------------------------------------------ */
 int main()
 {
     try

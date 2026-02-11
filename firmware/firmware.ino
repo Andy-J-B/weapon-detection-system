@@ -7,7 +7,7 @@
 #include <WebServer.h>
 #include "FS.h"
 #include "SD_MMC.h"
-#include "secrets.h"
+#include "secrets.h"           
 #include "sd_read_write.h"
 
 /* ----------  Pin mapping ---------- */
@@ -29,26 +29,23 @@
 #define PCLK_GPIO_NUM  13
 
 const int photoInterval = 10000; // 10 seconds
-unsigned long lastPhotoTime = 0;
-
-/* --------------------------  FreeRTOS objects  ------------------- */
-typedef struct {
-  camera_fb_t *camera_frame_buffer;          // pointer to the camera frame buffer
-  uint32_t     timestamp;                  // when it was captured (ms since boot)
-} frame_item_t;
 
 static QueueHandle_t   frameQueue   = nullptr; // frames for SD writer
 static SemaphoreHandle_t sdMutex     = nullptr; // protect SD card
 static SemaphoreHandle_t cameraMutex = nullptr; // exclusive camera access
-static SemaphoreHandle_t captureSem  = nullptr; // user-requested photo
+static SemaphoreHandle_t inferenceTrigger = nullptr; // user-requested photo
+static TaskHandle_t streamTaskHandle = nullptr; // streaming task had
 
 static WebServer server(80);
 
 /* forward declarations */
 static void initCamera();
 static void connectWifi();
-static void sendPhotoToServer();
 static void initWebServer();
+static void startMjpegTask(WiFiClient client);
+static void streamTask(void *pvParameters);
+static void inferenceTask(void *pvParameters);
+
 static void cameraCaptureTask(void *pvParameters);
 static void sdWriterTask(void *pvParameters);
 
@@ -65,10 +62,10 @@ void setup() {
 
   initWebServer();
 
-  frameQueue = xQueueCreate(5, sizeof(frame_item_t));
+  frameQueue = xQueueCreate(5, sizeof(camera_fb_t*));
   sdMutex = xSemaphoreCreateMutex();
   cameraMutex = xSemaphoreCreateMutex();
-  captureSem = xSemaphoreCreateBinary();
+  inferenceTrigger = xSemaphoreCreateBinary();
 
   xTaskCreatePinnedToCore(cameraCaptureTask,
                           "CamCap",
@@ -85,18 +82,21 @@ void setup() {
                           2,
                           nullptr,
                           1);
+
+  xTaskCreatePinnedToCore(inferenceTask,
+                          "Infer",
+                          8192,
+                          nullptr,
+                          2,
+                          nullptr,
+                          0);
+  
 }
 
-/* ----------------------------------------------------------------------- */
 void loop() {
-  if (millis() - lastPhotoTime >= photoInterval) {
-    lastPhotoTime = millis();
-    sendPhotoToServer();
-  }
   server.handleClient();
 }
 
-/* ----------------------------------------------------------------------- */
 static void initCamera() {
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
@@ -124,13 +124,7 @@ static void initCamera() {
   config.jpeg_quality = 12;
   config.grab_mode    = CAMERA_GRAB_LATEST;
   config.fb_location  = CAMERA_FB_IN_PSRAM;
-  config.fb_count     = 3;
-
-
-#if defined(CAMERA_MODEL_ESP_EYE)
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-#endif
+  config.fb_count     = 3; 
 
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
@@ -144,72 +138,74 @@ static void initCamera() {
     s->set_brightness(s, 1);
     s->set_saturation(s, -2);
   }
-
-#if defined(CAMERA_MODEL_ESP32S3_EYE)
-  s->set_vflip(s, 1);
-#endif
 }
 
-/* ----------------------------------------------------------------------- */
 static void connectWifi()
 {
-    if (WiFi.status() == WL_CONNECTED) {
-        return;
-    }
+  if (WiFi.isConnected()) return;
 
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    WiFi.begin(MY_SSID, MY_PASS);
+  WiFi.disconnect(true);
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  WiFi.begin(MY_SSID, MY_PASS);
 
-    const unsigned long timeout = 20000;
-    unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
-        delay(500);
-        Serial.print('.');
-    }
+  const unsigned long timeout = 20000;
+  unsigned long start = millis();
+  Serial.print("Connecting to Wi‑Fi");
+  while (WiFi.status() != WL_CONNECTED && (millis() - start) < timeout) {
+    delay(500);
+    Serial.print('.');
+  }
 
-    Serial.println();
-    if (WiFi.isConnected()) {
-        Serial.println("Wi‑Fi connected");
+  Serial.println();
+  if (WiFi.isConnected()) {
+    Serial.println("Wi‑Fi connected");
         Serial.print("Camera IP address: ");
-        Serial.println(WiFi.localIP());
-    } else {
+    Serial.println(WiFi.localIP());
+  } else {
         Serial.println("Wi‑Fi failed to connect");
-    }
+  }
 }
 
-/* ----------------------------------------------------------------------- */
 static void initWebServer() {
   server.on("/", HTTP_GET, []() {
     const char html[] PROGMEM = R"=====(
-    <!DOCTYPE html>
-    <html>
-      <head><title>ESP32‑CAM Live</title></head>
-      <body>
-        <h1>Camera Live Stream</h1>
-        <img src="/stream" style="width:100%;max-width:640px;">
-        <p>
-        <a href="/snapshot">Snapshot</a> |
-        <a href="/save">Save to SD</a>
-        </p>
-      </body>
-    </html>
-)=====";
+      <!DOCTYPE html>
+      <html>
+        <head><title>ESP32‑CAM Live</title></head>
+        <body>
+          <h1>Camera Live Stream</h1>
+          <img src="/stream" style="width:100%;max-width:640px;">
+          <p>
+            <a href="/snapshot">Snapshot</a> |
+            <a href="#" onclick="saveToSD()">Save to SD</a>
+          </p>
+
+          <script>
+          function saveToSD() {
+            fetch('/save')
+              .then(response => {
+                if(response.ok) alert("Capture queued!");
+                else alert("Camera busy!");
+              });
+          }
+          </script>
+        </body>
+      </html>
+    )=====";
     server.send(200, "text/html", html);
   });
 
   server.on("/snapshot", HTTP_GET, []() {
-    if (xSemaphoreTake(cameraMutex, 0) != pdTRUE) {
-        Serial.println("Camera busy - lock denied.");
-        server.send(503, "text/plain", "Camera Busy");
-        return;
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      server.send(503, "text/plain", "Camera Busy");
+      return;
     }
 
     camera_fb_t *fb = esp_camera_fb_get();
+    xSemaphoreGive(cameraMutex);
     if (!fb) {
       server.send(500, "text/plain", "Capture failed");
-      xSemaphoreGive(cameraMutex);
       return;
     }
 
@@ -217,89 +213,145 @@ static void initWebServer() {
     server.sendHeader("Content-Length", String(fb->len));
     server.client().write(fb->buf, fb->len);
     esp_camera_fb_return(fb);
-    xSemaphoreGive(cameraMutex);
   });
 
   server.on("/stream", HTTP_GET, []() {
-    WiFiClient client = server.client();
-    String header = "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: multipart/x-mixed-replace; boundary=frame\r\n\r\n";
-    client.print(header);
-    while (client.connected()) {
-        if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-            break;
-        }
-        camera_fb_t *fb = esp_camera_fb_get();
-        xSemaphoreGive(cameraMutex);
-        if (!fb) {
-            break;
-        }
-        client.print("--frame\r\n");
-        client.print("Content-Type: image/jpeg\r\n");
-        client.print("Content-Length: ");
-        client.print(fb->len);
-        client.print("\r\n\r\n");
-        client.write(fb->buf, fb->len);
-        client.print("\r\n");
-        esp_camera_fb_return(fb);
-        delay(100); 
+    WiFiClient client = server.client(); 
+    if (!client) {
+      server.send(500, "text/plain", "No client");
+      return;
     }
+
+    if (streamTaskHandle) {
+      vTaskDelete(streamTaskHandle);
+      streamTaskHandle = nullptr;
+    }
+
+    // Allocate the client on the heap and pass the pointer to the task.
+    WiFiClient *pClient = new WiFiClient(std::move(client));
+    BaseType_t ok = xTaskCreatePinnedToCore(
+            streamTask,
+            "MjpegStream",
+            6144,
+            pClient,
+            2,
+            &streamTaskHandle,
+            1); 
+    if (ok != pdPASS) {
+      delete pClient;
+      server.send(500, "text/plain", "Failed to start stream task");
+      return;
+    }
+
+    server.sendHeader("Cache-Control", "no-cache");
+    server.send(200, "text/plain", "Streaming started");
   });
 
   server.on("/save", HTTP_GET, []() {
-    if (xSemaphoreGive(captureSem) == pdTRUE) {
-        server.send(200, "application/json", "{\"status\":\"capture_queued\"}");
-    } else {
-        server.send(429, "application/json", "{\"error\":\"capture_already_in_progress\"}");
-    }
-  });
+  BaseType_t res = xSemaphoreGive(inferenceTrigger);
+  
+  String html;
+  if (res == pdTRUE) {
+    html = R"=====(
+      <script>
+        alert("Capture queued successfully!");
+        window.location.href = "/";
+      </script>
+    )=====";
+  } else {
+    html = R"=====(
+      <script>
+        alert("Error: Capture already in progress. Please wait.");
+        window.location.href = "/";
+      </script>
+    )=====";
+  }
+  
+  server.send(200, "text/html", html);
+});
 
-  server.onNotFound([]() {
-    server.send(404, "text/plain", "Not Found");
-  });
-
+  server.onNotFound([]() { server.send(404, "text/plain", "Not Found"); });
   server.begin();
-  Serial.println("HTTP server started – listen on port 80");
+  Serial.println("HTTP server started – port 80");
 }
 
-/* ----------------------------------------------------------------------- */
-static void sendPhotoToServer () {
+static void streamTask(void *pvParameters) {
+  WiFiClient *pClient = static_cast<WiFiClient*>(pvParameters);
+  WiFiClient client = std::move(*pClient);
+  delete pClient;               
 
-  if (WiFi.status() != WL_CONNECTED) {
-    connectWifi();
-    if (WiFi.status() != WL_CONNECTED) {
-      return;
+  client.println("HTTP/1.1 200 OK");
+  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+  client.println(); 
+
+  while (client.connected()) {
+    // get new frame
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      // Camera busy – skip this loop iteration.
+      continue;
     }
-  }
-
-  if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
-    Serial.println("sendPhotoToServer: could not lock camera");
-    return;
-  }
-
-  camera_fb_t *camera_frame_buffer = esp_camera_fb_get();
-
-  if (!camera_frame_buffer) {
-    Serial.println("sendPhotoToServer: camera capture failed");
+    camera_fb_t *fb = esp_camera_fb_get();
     xSemaphoreGive(cameraMutex);
-    return;
+
+    if (!fb) {
+      // Something went wrong – just continue to keep the connection alive.
+      continue;
+    }
+
+    client.print("--frame\r\n");
+    client.print("Content-Type: image/jpeg\r\n");
+    client.print("Content-Length: ");
+    client.println(fb->len);
+    client.println(); // blank line before JPEG data
+    client.write(fb->buf, fb->len);
+    client.println(); // end of part
+
+    esp_camera_fb_return(fb);
+
+    vTaskDelay(pdMS_TO_TICKS(30)); // ~30fps
   }
 
-  HTTPClient http;
-  http.begin(POST_URL);
-  http.addHeader("Content-Type", "image/jpeg");
-  int httpResponseCode = http.POST(camera_frame_buffer->buf, camera_frame_buffer->len);
-  Serial.printf("POST code: %d, size: %u bytes\n", httpResponseCode, camera_frame_buffer->len);
-  http.end();
-
-  esp_camera_fb_return(camera_frame_buffer);
-  xSemaphoreGive(cameraMutex);
+  client.stop();
+  Serial.println("[Stream] client disconnected – task ending");
+  streamTaskHandle = nullptr;
+  vTaskDelete(NULL);
 }
 
-/* ----------------------------------------------------------------------- */
+static void inferenceTask(void *pvParameters) {
+  TickType_t lastWake = xTaskGetTickCount();
+
+  for (;;) {
+    // Wait for the next interval.
+    vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(photoInterval));
+
+    if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
+      Serial.println("[Inference] could not lock camera – skip this interval");
+      continue;
+    }
+    camera_fb_t *fb = esp_camera_fb_get();
+    xSemaphoreGive(cameraMutex);
+    if (!fb) {
+      Serial.println("[Inference] camera capture failed");
+      continue;
+    }
+
+    // POST request to C++ server
+    HTTPClient http;
+    http.setConnectTimeout(5000);
+    http.setTimeout(5000);
+    http.begin(POST_URL);
+    http.addHeader("Content-Type", "image/jpeg");
+    int rc = http.POST(fb->buf, fb->len);
+    Serial.printf("[Inference] POST rc=%d, size=%u bytes\n", rc, fb->len);
+    http.end();
+
+    esp_camera_fb_return(fb);
+  }
+}
+
 static void cameraCaptureTask(void *pvParameters) {
   for (;;) {
-    if (xSemaphoreTake(captureSem, portMAX_DELAY) != pdTRUE) continue;
+    if (xSemaphoreTake(inferenceTrigger, portMAX_DELAY) != pdTRUE) continue;
 
     if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
       Serial.println("CamTask: could not lock camera");
@@ -315,11 +367,7 @@ static void cameraCaptureTask(void *pvParameters) {
       continue;
     }
 
-    frame_item_t item;
-    item.camera_frame_buffer = fb;
-    item.timestamp = millis();
-
-    if (xQueueSend(frameQueue, &item, pdMS_TO_TICKS(1000)) != pdTRUE) {
+    if (xQueueSend(frameQueue, &fb, pdMS_TO_TICKS(1000)) != pdTRUE) {
       Serial.println("CamTask: frameQueue full -> dropping frame");
       esp_camera_fb_return(fb);
     } else {
@@ -328,15 +376,14 @@ static void cameraCaptureTask(void *pvParameters) {
   }
 }
 
-/* ----------------------------------------------------------------------- */
 static void sdWriterTask(void *pvParameters) {
   for (;;) {
-    frame_item_t item;
-    if (xQueueReceive(frameQueue, &item, portMAX_DELAY) != pdTRUE) continue;
+    camera_fb_t *fb = nullptr;
+    if (xQueueReceive(frameQueue, &fb, portMAX_DELAY) != pdTRUE) continue;
 
     if (xSemaphoreTake(sdMutex, pdMS_TO_TICKS(5000)) != pdTRUE) {
       Serial.println("SDTask: could not lock SD card");
-      esp_camera_fb_return(item.camera_frame_buffer);
+      esp_camera_fb_return(fb);
       continue;
     }
 
@@ -344,15 +391,15 @@ static void sdWriterTask(void *pvParameters) {
     if (photo_index == -1) {
       Serial.println("Save to sd card failed.");
       xSemaphoreGive(sdMutex);
-      esp_camera_fb_return(item.camera_frame_buffer);
+      esp_camera_fb_return(fb);
       continue;
     }
 
     String path = "/camera/" + String(photo_index) + ".jpg";
-    writejpg(SD_MMC, path.c_str(), item.camera_frame_buffer->buf, item.camera_frame_buffer->len);
+    writejpg(SD_MMC, path.c_str(), fb->buf, fb->len);
+    Serial.printf("SDTask: %u bytes written to %s\n", fb->len, path.c_str());
 
-    Serial.printf("SDTask: %u bytes written to %s\n", item.camera_frame_buffer->len, path);
     xSemaphoreGive(sdMutex);
-    esp_camera_fb_return(item.camera_frame_buffer);
+    esp_camera_fb_return(fb);
   }
 }
