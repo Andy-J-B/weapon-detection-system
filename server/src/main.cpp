@@ -40,131 +40,179 @@ static inline std::string trim(const std::string& s)
     return (start < end) ? std::string(start, end) : std::string{};
 }
 
-/* AI - Runs  */
-bool run_yolo(cv::Mat& image) {
-
-    std::cout << "Starting yolo inference\n";
-    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/best.onnx";
-    static const float CONF_THRESH = 0.35f;             // detection confidence (objectness × class‑score)
-    static const float NMS_THRESH  = 0.45f;       
-    static const cv::Size INPUT_SIZE(640, 640); 
-
-    // 0 : knife, 1 : handgun
-    static const std::vector<int> weaponClassIds = {0, 1};
-
+/**
+ * @brief Run the binary weapon detector.
+ *
+ * The function returns true if **any** detection with class id == 0 (weapon) is
+ * found.  The background (“non‑weapon”) case is simply “no detection”.
+ *
+ * @param image        BGR cv::Mat received from the ESP32‑CAM (any resolution).
+ * @param confThresh   Minimum (objectness × class) confidence.  Default 0.35.
+ * @param nmsThresh    IoU threshold for NMS.                Default 0.45.
+ * @return true        Weapon present.
+ * @return false       No weapon.
+ */
+bool detectWeapon(const cv::Mat& image,
+                 float confThresh = 0.35f,
+                 float nmsThresh  = 0.45f)
+{
+    // -----------------------------------------------------------
+    // 1️⃣ Load the model (static -> executed only once)
+    // -----------------------------------------------------------
+    static const std::string modelPath = "/usr/local/weapon-detection-server/best.onnx";
     static cv::dnn::Net net;
-    static bool netInitialized = false;
+    static bool initialized = false;
 
-
-    if (!netInitialized)
-    {
-        try
-        {
+    if (!initialized) {
+        try {
             net = cv::dnn::readNetFromONNX(modelPath);
-            std::cout << "✅ Loaded YOLO model from '" << modelPath << "' ("
-                  << net.getLayerNames().size() << " layers)\n";
             net.setPreferableBackend(cv::dnn::DNN_BACKEND_OPENCV);
             net.setPreferableTarget(cv::dnn::DNN_TARGET_CPU);
-            netInitialized = true;
-        }
-        catch (const cv::Exception& e)
-        {
-            std::cerr << "⚠️  Failed to load YOLO model from '" << modelPath
-                      << "': " << e.what() << std::endl;
-            return false;   // without a model we cannot detect anything
+            std::cout << "✅ Loaded ONNX model from '" << modelPath << "'\n";
+            initialized = true;
+        } catch (const cv::Exception& e) {
+            std::cerr << "❌ Failed to load ONNX model: " << e.what() << "\n";
+            return false;               // can't detect without a model
         }
     }
 
-    if (image.empty())
-    {
-        std::cerr << "⚠️  run_yolo received an empty image." << std::endl;
+    // -----------------------------------------------------------
+    // 2️⃣ Guard against empty input
+    // -----------------------------------------------------------
+    if (image.empty()) {
+        std::cerr << "⚠️  Received an empty image.\n";
         return false;
     }
 
-    // Pre-process
-    cv::Mat blob = cv::dnn::blobFromImage(
-        image,                // source image (BGR)
-        1.0 / 255.0,         // scale factor – YOLO expects values in [0,1]
-        INPUT_SIZE,         // resize to the size used during training
-        cv::Scalar(),       // mean subtraction (none)
-        true,               // swap RB (OpenCV loads BGR, YOLO was trained on RGB)
-        false               // crop – we want a straight resize with letter‑box padding handled by the network
-    );
+    // -----------------------------------------------------------
+    // 3️⃣ Pre‑process – letterbox to 640×640 (same size used at training)
+    // -----------------------------------------------------------
+    const cv::Size INPUT_SIZE(640, 640);
+    cv::Mat resized;
+    float r = std::min(INPUT_SIZE.width  / static_cast<float>(image.cols),
+                       INPUT_SIZE.height / static_cast<float>(image.rows));
+    int new_unpad_w = static_cast<int>(std::round(image.cols * r));
+    int new_unpad_h = static_cast<int>(std::round(image.rows * r));
+    cv::resize(image, resized, cv::Size(new_unpad_w, new_unpad_h));
 
-    // Forward Pass
+    // Add constant padding (114) – exactly what YOLO‑v5 does
+    int dw = INPUT_SIZE.width  - new_unpad_w;
+    int dh = INPUT_SIZE.height - new_unpad_h;
+    dw /= 2;  dh /= 2;        // split evenly left/right and top/bottom
+    cv::Mat padded;
+    cv::copyMakeBorder(resized, padded,
+                       dh, dh, dw, dw,
+                       cv::BORDER_CONSTANT,
+                       cv::Scalar(114, 114, 114));
+
+    // Convert to blob (1,3,640,640), scale to [0,1] and swap RGB↔BGR
+    cv::Mat blob = cv::dnn::blobFromImage(padded,
+                                          1.0/255.0,
+                                          INPUT_SIZE,
+                                          cv::Scalar(),
+                                          true,   // swapRB
+                                          false); // no crop
+
+    // -----------------------------------------------------------
+    // 4️⃣ Forward pass
+    // -----------------------------------------------------------
     net.setInput(blob);
-
-
-    cv::Mat preds;
-    try
-    {
-        preds = net.forward();   // single output
-    }
-    catch (const cv::Exception& e)
-    {
-        std::cerr << "⚠️  Inference error: " << e.what() << std::endl;
+    cv::Mat out;
+    try {
+        out = net.forward();   // shape: (1, N, 5+nc)  where nc=1
+    } catch (const cv::Exception& e) {
+        std::cerr << "❌ Inference failed: " << e.what() << "\n";
         return false;
     }
 
-    // The output may be a 3‑D Mat; flatten it to a 2‑D view for easier indexing.
-    // Expected shape: (1, N, C)  →  we drop the leading 1.
-    const int numDetections = preds.size[1];
-    const int numChannels   = preds.size[2];   // typically 5 + num_classes
+    // -----------------------------------------------------------
+    // 5️⃣ Decode detections
+    // -----------------------------------------------------------
+    const int N = out.size[1];
+    const int C = out.size[2];               // = 5 + nc  (nc == 1)
+    CV_Assert(C >= 6);                       // sanity check
 
-    // Safety check – if the tensor shape is not what we expect, abort.
-    if (numDetections == 0 || numChannels <= 5)
-    {
-        std::cerr << "⚠️  Unexpected network output shape." << std::endl;
+    // 2‑D view [N x C] for easier indexing
+    cv::Mat dets(N, C, CV_32F, out.ptr<float>());
+
+    std::vector<int>   keepIdx;
+    std::vector<float> keepConf;
+    std::vector<cv::Rect> keepBox;
+
+    for (int i = 0; i < N; ++i) {
+        const float* row = dets.ptr<float>(i);
+        float objScore = row[4];
+        if (objScore < confThresh) continue;    // filter early
+
+        // class scores start at column 5 – we have only one class (weapon)
+        float clsScore = row[5];
+        float confidence = objScore * clsScore;
+        if (confidence < confThresh) continue;
+
+        // bbox is (center_x, center_y, w, h) normalized to INPUT_SIZE
+        float cx = row[0];
+        float cy = row[1];
+        float w  = row[2];
+        float h  = row[3];
+
+        // Convert to pixel coordinates in the padded image
+        int x = static_cast<int>((cx - w/2.0f) * INPUT_SIZE.width );
+        int y = static_cast<int>((cy - h/2.0f) * INPUT_SIZE.height);
+        int bw = static_cast<int>(w * INPUT_SIZE.width);
+        int bh = static_cast<int>(h * INPUT_SIZE.height);
+
+        // Undo padding offset
+        x -= dw;
+        y -= dh;
+
+        // Scale back to original image size (undo the letter‑box scaling)
+        x = static_cast<int>(std::round(x / r));
+        y = static_cast<int>(std::round(y / r));
+        bw = static_cast<int>(std::round(bw / r));
+        bh = static_cast<int>(std::round(bh / r));
+
+        // Clip to image bounds
+        x = std::max(0, std::min(x, image.cols-1));
+        y = std::max(0, std::min(y, image.rows-1));
+        bw = std::max(0, std::min(bw, image.cols - x));
+        bh = std::max(0, std::min(bh, image.rows - y));
+
+        // Store candidate (we will still apply NMS)
+        keepIdx.push_back(i);
+        keepConf.push_back(confidence);
+        keepBox.emplace_back(x, y, bw, bh);
+    }
+
+    // -----------------------------------------------------------
+    // 6️⃣ NMS – remove duplicate boxes (if any)
+    // -----------------------------------------------------------
+    std::vector<int> nmsIndices;
+    cv::dnn::NMSBoxes(keepBox, keepConf, confThresh, nmsThresh, nmsIndices);
+
+    // -----------------------------------------------------------
+    // 7️⃣ Final answer
+    // -----------------------------------------------------------
+    if (nmsIndices.empty()) {
+        std::cout << "🟢 No weapon detected (background).\n";
         return false;
     }
 
-    // Create a view that treats the data as a matrix of [N x C] floats.
-    cv::Mat detections(numDetections, numChannels, CV_32F, preds.ptr<float>());
-
-    for (int i = 0; i < numDetections; ++i)
-    {
-        const float objScore = detections.at<float>(i, 4);
-        if (objScore < CONF_THRESH)               // filter out low‑objectness boxes early
-            continue;
-
-        // Class scores start at column 5.
-        cv::Mat scores = detections.row(i).colRange(5, numChannels);
-        cv::Point maxClassIdx;
-        double   maxClassScore = 0.0;
-        cv::minMaxLoc(scores, nullptr, &maxClassScore, nullptr, &maxClassIdx);
-
-        const float confidence = static_cast<float>(objScore * maxClassScore);
-        if (confidence < CONF_THRESH)
-            continue;   // discard low‑confidence detections
-
-        int classId = maxClassIdx.x;   // zero‑based index into the model’s class list
-        
-        // Decide whether there's a weapon detected
-        bool isWeapon = false;
-        if (!weaponClassIds.empty())
-        {
-            // If you supplied an explicit whitelist, check membership.
-            isWeapon = std::find(weaponClassIds.begin(),
-                                 weaponClassIds.end(),
-                                 classId) != weaponClassIds.end();
-        }
-        else
-        {
-            // No whitelist supplied – treat *any* detection as a threat.
-            isWeapon = true;
-        }
-        std::cout << "Deciding whether this is a weapon\n";
-
-        if (isWeapon)
-        {
-            std::cout << "Detected a weapon!"<< std::endl;
-            return true;
-            
-        }
+    // There could be many weapons – we just report the most confident one.
+    int best = nmsIndices[0];
+    for (int idx : nmsIndices) {
+        if (keepConf[idx] > keepConf[best])
+            best = idx;
     }
-    // No Detection
-    std::cout << "Didn't detect a weapon."<< std::endl;
-    return false;
+
+    const cv::Rect& wp = keepBox[best];
+    float finalConf = keepConf[best];
+
+    std::cout << "🔴 Weapon detected! "
+              << "bbox=(" << wp.x << "," << wp.y << "," << wp.width << "," << wp.height << ") "
+              << "confidence=" << finalConf << "\n";
+
+    // For a binary detector, any detection ≡ weapon
+    return true;
 }
 
 /* 
@@ -290,10 +338,14 @@ private:
         std::istream body_stream(&buffer_);
         body_stream.read(body_.data(), static_cast<std::streamsize>(content_length_));
 
-        cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
-        bool threat = false;
+        // cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
+        // bool threat = false;
+
+        cv::Mat img = cv::imdecode(jpegBytes, cv::IMREAD_COLOR);
+        bool weapon = false;
+
         try {
-            threat = run_yolo(img);
+            weapon = detectWeapon(img);
         } catch (const cv::Exception& e) {
             // Handle potential OpenCV runtime errors during detection
             std::cerr << "OpenCV Error during run_yolo: " << e.what() << std::endl;
@@ -308,7 +360,7 @@ private:
         
 
         // For now just acknowledge receipt
-        if (threat) {
+        if (weapon) {
         send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nTHREAT DETECTED!");
     } else {
         // Acknowledge receipt and successful processing

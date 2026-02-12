@@ -1,125 +1,131 @@
-# --------------------------------------------------------------
-#  train_binary.py  –  GPU‑accelerated training of a 1‑class YOLO‑v5
-# --------------------------------------------------------------
+#!/usr/bin/env python3
+# ----------------------------------------------------------------------
+# train_binary.py  –  Binary weapon detector (YOLO‑v5 / Ultralytics v8)
+#
+#   •  Input:  weapon_data/weapon.yaml  (nc = 1, name = ['weapon'])
+#   •  Output: runs/train/weapon_binary/weights/best.onnx
+#   •  GPU is used automatically when available (`--device 0`).
+# ----------------------------------------------------------------------
 import argparse
 import sys
 from pathlib import Path
 
-# Ultralytics YOLO‑v5 repo must be checked out next to this file.
-YOLOV5_ROOT = Path(__file__).resolve().parent / "yolov5"
-if not YOLOV5_ROOT.is_dir():
-    raise RuntimeError(
-        f"YOLO‑v5 source not found at {YOLOV5_ROOT}. "
-        "Clone it once with:  git clone https://github.com/ultralytics/yolov5.git"
-    )
-sys.path.append(str(YOLOV5_ROOT))
+
+# ----------------------------------------------------------------------
+# Helper: print a nice banner
+# ----------------------------------------------------------------------
+def banner(txt: str) -> None:
+    line = "#" * (len(txt) + 8)
+    print(f"\n{line}\n##  {txt}  ##\n{line}\n")
 
 
+# ----------------------------------------------------------------------
+# Main training routine (Ultralytics YOLO API)
+# ----------------------------------------------------------------------
 def train(
     data_yaml: str,
     epochs: int = 150,
     batch: int = 16,
     imgsz: int = 640,
-    device: str = "0",
-    weights: str = "yolov5s.pt",
+    device: str = "0",  # "0" = first CUDA device, "-1" = CPU
+    weights: str = "yolov5s.pt",  # pretrained backbone (downloaded automatically)
     project: str = "runs/train",
     name: str = "weapon_binary",
-):
+    patience: int = 30,
+) -> Path:
     """
-    Trains a YOLO‑v5 model for the binary weapon detector.
-    The best checkpoint is automatically exported to ONNX as best.onnx.
-    """
-    from yolov5 import train as yolov5_train  # type: ignore
+    Trains a YOLO‑v5 model for the binary weapon detection task
+    and exports the best checkpoint to ONNX.
 
-    # ----------------------------------------------------------
-    # Build the argument namespace expected by yolov5.train()
-    # ----------------------------------------------------------
-    args = argparse.Namespace(
+    Returns the path to the exported ONNX file.
+    """
+    # --------------------------------------------------------------
+    # 1️⃣  Import the high‑level Ultralytics API (this will download the
+    #     official YOLO‑v5 repo the first time it runs)
+    # --------------------------------------------------------------
+    try:
+        from ultralytics import YOLO
+    except Exception as e:  # pip install ultralytics
+        raise RuntimeError(
+            "❌  Ultralytics not installed. Run: pip install ultralytics"
+        ) from e
+
+    # --------------------------------------------------------------
+    # 2️⃣  Load a pretrained backbone (yolov5s is tiny & fast)
+    # --------------------------------------------------------------
+    banner("INITIALISING YOLO‑v5")
+    model = YOLO(weights)  # weights can be .pt or .yaml
+
+    # --------------------------------------------------------------
+    # 3️⃣  Train
+    # --------------------------------------------------------------
+    banner("STARTING TRAINING")
+    model.train(
         data=data_yaml,
-        cfg="yolov5s.yaml",  # architecture – you can also try yolov5n.yaml for an even smaller model
-        weights=weights,
-        batch_size=batch,
         epochs=epochs,
+        batch=batch,
         imgsz=imgsz,
         device=device,
         project=project,
         name=name,
-        augment=True,
-        rect=False,
-        cache=False,
-        workers=8,
-        single_cls=False,  # keep false – we already have nc=1 in yaml
-        patience=30,
-        resume=False,
-        nosave=False,
-        noval=False,
-        evolve=False,
-        freeze=0,
-        lr0=0.01,
-        lrf=0.01,
-        momentum=0.937,
-        weight_decay=5e-4,
-        warmup_epochs=3.0,
-        warmup_momentum=0.8,
-        warmup_bias_lr=0.1,
-        box=0.05,
-        cls=0.5,
-        dfl=1.0,
-        label_smoothing=0.0,
-        nbs=64,
-        hsv_h=0.015,
-        hsv_s=0.7,
-        hsv_v=0.4,
-        degrees=0.0,
-        translate=0.1,
-        scale=0.5,
-        shear=0.0,
-        perspective=0.0,
-        flipud=0.0,
-        fliplr=0.5,
-        mosaic=1.0,
-        mixup=0.0,
-        copy_paste=0.0,
-        # -------------------  Misc  -------------------
-        save_dir=None,  # let YOLO decide (project/name)
-        exist_ok=False,
-        verbose=True,
+        patience=patience,
+        # The following arguments are optional but useful for reproducibility
+        cache=False,  # do not cache all images (saves RAM)
+        workers=8,  # number of dataloader workers
+        # hyper‑parameters you can tweak later
+        # lr0=0.01,  lrf=0.01,  momentum=0.937,  weight_decay=5e-4,
+        # augment=True,  # default – mosaic/HSV etc.
     )
-    # Run the training job
-    yolov5_train.run(args)
 
-    # ----------------------------------------------------------
-    # Export the best checkpoint to ONNX
-    # ----------------------------------------------------------
+    # --------------------------------------------------------------
+    # 4️⃣  Export the best checkpoint to ONNX (ops‑et 12 → most compatible)
+    # --------------------------------------------------------------
     best_pt = Path(project) / name / "weights" / "best.pt"
     if not best_pt.is_file():
-        raise RuntimeError(f"Training finished but {best_pt} not found")
+        raise RuntimeError(f"❌  Expected checkpoint not found: {best_pt}")
 
-    from yolov5 import models  # type: ignore
-
-    model = models.common.AutoShape(str(best_pt))  # wrapper that provides .export()
+    banner("EXPORTING BEST CHECKPOINT TO ONNX")
     onnx_path = Path(project) / name / "weights" / "best.onnx"
-    model.export(format="onnx", opset=12, simplify=True)
-    print(f"\n✅ Exported ONNX model → {onnx_path.resolve()}\n")
+    model.export(
+        format="onnx",
+        opset=12,
+        simplify=True,
+        imgsz=imgsz,
+        batch=1,
+        device=device,
+        half=False,  # keep FP32 (easier for OpenCV DNN)
+        include=["model"],  # only the core model
+        checkpoint=best_pt,
+        save_dir=onnx_path.parent,
+    )
+    print(f"✅  ONNX model written to: {onnx_path.resolve()}")
     return onnx_path
 
 
-# ------------------------------------------------------------------
+# ----------------------------------------------------------------------
 # CLI entry point
-# ------------------------------------------------------------------
+# ----------------------------------------------------------------------
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(
-        description="Train a binary weapon detector (YOLO‑v5) on the GPU."
+        description=(
+            "Train a binary weapon detector (YOLO‑v5) on the GPU. "
+            "The script expects a YOLO‑v5 style dataset descriptor "
+            "(nc=1, names=['weapon'])."
+        )
     )
     parser.add_argument(
         "-d",
         "--data",
         type=str,
         default="weapon_data/weapon.yaml",
-        help="Path to dataset yaml (default: weapon_data/weapon.yaml)",
+        help="Path to the dataset yaml file (default: weapon_data/weapon.yaml)",
     )
     parser.add_argument(
-        "-e", "--epochs", type=int, default=150, help="Number of epochs (default 150)"
+        "-e",
+        "--epochs",
+        type=int,
+        default=150,
+        help="Number of training epochs (default 150)",
     )
     parser.add_argument(
         "-b", "--batch", type=int, default=16, help="Batch size per GPU (default 16)"
@@ -129,24 +135,46 @@ if __name__ == "__main__":
         "--imgsz",
         type=int,
         default=640,
-        help="Training / inference image dimension (default 640)",
+        help="Image size for training / inference (default 640)",
     )
     parser.add_argument(
         "-g",
         "--device",
         type=str,
         default="0",
-        help='CUDA device id (e.g. "0" for first GPU, "-1" for CPU)',
+        help='CUDA device id ("0" for first GPU, "-1" for CPU).',
     )
     parser.add_argument(
         "-w",
         "--weights",
         type=str,
         default="yolov5s.pt",
-        help="Pre‑trained backbone (default yolov5s.pt)",
+        help="Pre‑trained backbone (default yolov5s.pt).",
+    )
+    parser.add_argument(
+        "-p",
+        "--project",
+        type=str,
+        default="runs/train",
+        help="Root folder for all training runs.",
+    )
+    parser.add_argument(
+        "-n",
+        "--name",
+        type=str,
+        default="weapon_binary",
+        help="Sub‑folder name under the project directory.",
+    )
+    parser.add_argument(
+        "-P",
+        "--patience",
+        type=int,
+        default=30,
+        help="Early‑stop patience (default 30 epochs).",
     )
     args = parser.parse_args()
 
+    # Run training – everything else is handled inside `train()`
     train(
         data_yaml=args.data,
         epochs=args.epochs,
@@ -154,4 +182,7 @@ if __name__ == "__main__":
         imgsz=args.imgsz,
         device=args.device,
         weights=args.weights,
+        project=args.project,
+        name=args.name,
+        patience=args.patience,
     )
