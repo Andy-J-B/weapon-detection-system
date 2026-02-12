@@ -13,6 +13,7 @@ import argparse
 import signal
 import sys
 from pathlib import Path
+import os
 
 from ultralytics import YOLO
 
@@ -31,6 +32,8 @@ def _sigint_handler(sig, frame):
 
 
 signal.signal(signal.SIGINT, _sigint_handler)
+current_working_dir = os.getcwd()
+data_file = f"{current_working_dir}/server/models/dataset.yaml"
 
 
 # ----------------------------------------------------------------------
@@ -67,7 +70,7 @@ def parse_args():
     )
     parser.add_argument(
         "--device",
-        default="cpu",
+        default="0",  # "0" points to your first NVIDIA GPU
         help="Device to use – e.g. cpu, 0 (first GPU), 0,1 (multiple GPUs).",
     )
     parser.add_argument(
@@ -132,7 +135,7 @@ def main():
     # 4‑b. Train – note the `resume=args.resume` flag.
     # ------------------------------------------------------------------
     train_results = model.train(
-        data=r"/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/models/dataset.yaml",
+        data=rf"{data_file}",
         epochs=args.epochs,
         batch=args.batch,
         imgsz=args.imgsz,
