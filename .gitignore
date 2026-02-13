@@ -4,6 +4,7 @@
 venv
 # Prerequisites
 *.d
+yolov5/
 
 # Compiled Object files
 *.slo
