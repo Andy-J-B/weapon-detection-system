@@ -4,7 +4,10 @@
 venv
 # Prerequisites
 *.d
-
+yolov5/
+datasets/
+server/models/weapon_data/weapon_data/
+server/models/yolov5/
 # Compiled Object files
 *.slo
 *.lo
