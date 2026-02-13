@@ -2,7 +2,7 @@ task: detect
 mode: train
 model: yolov5s.pt
 data: /home/jba168/personal/github/weapon-detection-system/server/models/weapon_data/weapon.yaml
-epochs: 200
+epochs: 150
 time: null
 patience: 30
 batch: 16
