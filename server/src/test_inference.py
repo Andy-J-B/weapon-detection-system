@@ -4,7 +4,7 @@ import sys
 import os
 
 # --- Constants (Must match C++ exactly) ---
-MODEL_PATH = "server/best.onnx"  # Adjust if your path is different
+MODEL_PATH = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/weights/best.onnx"  # Adjust if your path is different
 INPUT_WIDTH = 640
 INPUT_HEIGHT = 640
 SCORE_THRESHOLD = 0.2  # Low threshold for testing

@@ -59,7 +59,8 @@ bool detectWeapon(const cv::Mat& image,
     // -----------------------------------------------------------
     // 1️⃣ Load the model (static -> executed only once)
     // -----------------------------------------------------------
-    static const std::string modelPath = "/usr/local/weapon-detection-server/best.onnx";
+    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/weights/best.onnx";
+
     static cv::dnn::Net net;
     static bool initialized = false;
 
@@ -72,7 +73,7 @@ bool detectWeapon(const cv::Mat& image,
             initialized = true;
         } catch (const cv::Exception& e) {
             std::cerr << "❌ Failed to load ONNX model: " << e.what() << "\n";
-            return false;               // can't detect without a model
+            return false;               
         }
     }
 
@@ -138,6 +139,7 @@ bool detectWeapon(const cv::Mat& image,
     std::vector<int>   keepIdx;
     std::vector<float> keepConf;
     std::vector<cv::Rect> keepBox;
+    std::vector<int>   keepCls; 
 
     for (int i = 0; i < N; ++i) {
         const float* row = dets.ptr<float>(i);
@@ -145,8 +147,18 @@ bool detectWeapon(const cv::Mat& image,
         if (objScore < confThresh) continue;    // filter early
 
         // class scores start at column 5 – we have only one class (weapon)
-        float clsScore = row[5];
-        float confidence = objScore * clsScore;
+        int bestClass = -1;
+        float bestClsScore = -1.f;
+        for (int c = 5; c<5; ++c) {
+            float clsScore = row[c];
+            if (clasScore > bestClsScore) {
+                bestClsScore = clsScore;
+                bestClass = c -5;
+            }
+        }
+        if (bestClass < 0) continue;
+
+        float confidence = objScore * bestClsScore;
         if (confidence < confThresh) continue;
 
         // bbox is (center_x, center_y, w, h) normalized to INPUT_SIZE
@@ -177,10 +189,18 @@ bool detectWeapon(const cv::Mat& image,
         bw = std::max(0, std::min(bw, image.cols - x));
         bh = std::max(0, std::min(bh, image.rows - y));
 
+        const char* clsName = (bestClass == 0) ? "Weapon" : "Human";
+        std::cout << "[RAW DET] class=" << clsName
+              << " (id=" << bestClass << ")"
+              << ", objScore=" << objScore
+              << ", clsScore=" << bestClsScore
+              << ", confidence=" << confidence << "\n";
+
         // Store candidate (we will still apply NMS)
         keepIdx.push_back(i);
         keepConf.push_back(confidence);
         keepBox.emplace_back(x, y, bw, bh);
+        keepCls.push_back(bestClass);
     }
 
     // -----------------------------------------------------------
@@ -188,6 +208,21 @@ bool detectWeapon(const cv::Mat& image,
     // -----------------------------------------------------------
     std::vector<int> nmsIndices;
     cv::dnn::NMSBoxes(keepBox, keepConf, confThresh, nmsThresh, nmsIndices);
+
+    for (int idx : nmsIndices) {
+        int clsId = keepCls[idx];
+        const char* clsName = (clsId == 0) ? "Weapon" : "Human";
+
+        const cv::Rect& box = keepBox[idx];
+        float conf = keepConf[idx];
+
+        std::cout << "[NMS KEEP] class=" << clsName
+                << " (id=" << clsId << ")"
+                << ", confidence=" << conf
+                << ", bbox=(" << box.x << "," << box.y
+                << "," << box.width << "," << box.height << ")\n";
+    }
+
 
     // -----------------------------------------------------------
     // 7️⃣ Final answer
@@ -197,22 +232,37 @@ bool detectWeapon(const cv::Mat& image,
         return false;
     }
 
-    // There could be many weapons – we just report the most confident one.
-    int best = nmsIndices[0];
+    bool weaponFound = false;
+    bool humanFound  = false;
+    float bestWeaponConf = 0.f;
+    float bestHumanConf  = 0.f;
+
     for (int idx : nmsIndices) {
-        if (keepConf[idx] > keepConf[best])
-            best = idx;
+        int clsId = keepCls[idx];
+        float conf = keepConf[idx];
+
+        if (clsId == 0) {                     // weapon
+            weaponFound = true;
+            bestWeaponConf = std::max(bestWeaponConf, conf);
+        } else if (clsId == 1) {              // human
+            humanFound = true;
+            bestHumanConf = std::max(bestHumanConf, conf);
+        }
     }
 
-    const cv::Rect& wp = keepBox[best];
-    float finalConf = keepConf[best];
+    // ---- LOG THE SUMMARY ----
+    if (weaponFound) {
+        std::cout << "🔴 Weapon detected! best confidence = " << bestWeaponConf << "\n";
+    }
+    if (humanFound) {
+        std::cout << "🟡 Human detected!  best confidence = " << bestHumanConf << "\n";
+    }
+    if (!weaponFound && !humanFound) {
+        std::cout << "🟢 No weapon / human detected.\n";
+    }
 
-    std::cout << "🔴 Weapon detected! "
-              << "bbox=(" << wp.x << "," << wp.y << "," << wp.width << "," << wp.height << ") "
-              << "confidence=" << finalConf << "\n";
-
-    // For a binary detector, any detection ≡ weapon
-    return true;
+    // Return true if a weapon was present (your original contract)
+    return weaponFound;
 }
 
 /* 
@@ -340,8 +390,9 @@ private:
 
         // cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
         // bool threat = false;
+        cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
 
-        cv::Mat img = cv::imdecode(jpegBytes, cv::IMREAD_COLOR);
+        // cv::Mat img = cv::imdecode(jpegBytes, cv::IMREAD_COLOR);
         bool weapon = false;
 
         try {
