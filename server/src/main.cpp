@@ -26,6 +26,7 @@
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>  
 #include <opencv2/highgui.hpp>  
+#include "secrets.h"
 
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
@@ -59,7 +60,7 @@ bool detectWeapon(const cv::Mat& image,
     // -----------------------------------------------------------
     // 1️⃣ Load the model (static -> executed only once)
     // -----------------------------------------------------------
-    static const std::string modelPath = "/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/weights/best.onnx";
+    static const std::string modelPath = MODEL_PATH;
 
     static cv::dnn::Net net;
     static bool initialized = false;
@@ -151,7 +152,7 @@ bool detectWeapon(const cv::Mat& image,
         float bestClsScore = -1.f;
         for (int c = 5; c<5; ++c) {
             float clsScore = row[c];
-            if (clasScore > bestClsScore) {
+            if (clsScore > bestClsScore) {
                 bestClsScore = clsScore;
                 bestClass = c -5;
             }
@@ -388,11 +389,13 @@ private:
         std::istream body_stream(&buffer_);
         body_stream.read(body_.data(), static_cast<std::streamsize>(content_length_));
 
-        // cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
-        // bool threat = false;
         cv::Mat img = cv::imdecode(cv::Mat(body_), cv::IMREAD_COLOR);
+        if (img.empty()) {
+            std::cerr << "❌ Failed to decode JPEG body." << std::endl;
+            send_response("400 Bad Request\r\n\r\nInvalid Image Data");
+            return;
+        }
 
-        // cv::Mat img = cv::imdecode(jpegBytes, cv::IMREAD_COLOR);
         bool weapon = false;
 
         try {
@@ -408,16 +411,20 @@ private:
             send_response("500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nImage processing error");
             return;
         }
-        
 
-        // For now just acknowledge receipt
-        if (weapon) {
-        send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nTHREAT DETECTED!");
-    } else {
-        // Acknowledge receipt and successful processing
-        send_response("200 OK\r\nContent-Type: text/plain\r\n\r\nImage processed. No threat detected.");
-    }
-    }
+        // Build a JSON payload
+        std::ostringstream payload;
+        payload << "{ \"threat\" : " << (weapon ? "true" : "false") << " }";
+
+        std::string body = payload.str();
+        std::string status = "200 OK";
+        std::string headers =
+            "Content-Type: application/json\r\n"
+            "Content-Length: " + std::to_string(body.size()) + "\r\n";
+
+        send_response(status + "\r\n" + headers + "\r\n" + body);}
+
+    
 
 
     void send_response(const std::string& status_and_headers)
