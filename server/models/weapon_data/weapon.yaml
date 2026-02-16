@@ -1,5 +1,0 @@
-train: weapon_data/images/train
-val:   weapon_data/images/val
-
-nc: 1
-names: [ 'weapon' ]

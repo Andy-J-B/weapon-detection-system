@@ -1,7 +1,0 @@
-names:
-- Human
-- Gun
-nc: 2
-path: /home/jba168/personal/github/weapon-detection-system/datasets/cleaned_gun_data
-train: images/train
-val: images/val
