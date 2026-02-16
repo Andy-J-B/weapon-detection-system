@@ -20,6 +20,7 @@
 #include <algorithm> // Used for algorithms to help with helper functions? like find_if_not
 #include <cctype> // character logic
 #include <sstream> //  treat strings as streams, enabling performing formatted input and output operations on them
+#include <cstdlib>
 #include <opencv2/core.hpp>
 #include <opencv2/dnn.hpp>
 #include <opencv2/imgcodecs.hpp>
@@ -27,6 +28,7 @@
 #include <opencv2/imgproc.hpp>  
 #include <opencv2/highgui.hpp>  
 #include "secrets.h"
+
 
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
@@ -40,6 +42,23 @@ static inline std::string trim(const std::string& s)
                                   [](unsigned char c){ return std::isspace(c); }).base();
     return (start < end) ? std::string(start, end) : std::string{};
 }
+
+void sendPhoneAlert(const std::string& message) {
+    // Replace with your actual keys from secrets.h
+    std::string token = PUSHOVER_TOKEN;
+    std::string user  = PUSHOVER_USER;
+    
+    // Construct a curl command (simple and synchronous for errors)
+    std::string cmd = "curl -s \
+        --form-string \"token=" + token + "\" \
+        --form-string \"user=" + user + "\" \
+        --form-string \"message=" + message + "\" \
+        https://api.pushover.net/1/messages.json > /dev/null";
+
+    // Run it in the background so it doesn't hang the server
+    std::system((cmd + " &").c_str());
+}
+
 
 /**
  * @brief Run the binary weapon detector.
@@ -410,6 +429,11 @@ private:
             std::cerr << "Detection Error: " << e.what() << std::endl;
             send_response("500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\nImage processing error");
             return;
+        }
+
+
+        if (weapon) {
+            sendPhoneAlert("🚨 THREAT DETECTED: A weapon has been identified!");
         }
 
         // Build a JSON payload

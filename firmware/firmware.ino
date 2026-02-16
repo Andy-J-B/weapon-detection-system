@@ -248,27 +248,27 @@ static void initWebServer() {
   });
 
   server.on("/save", HTTP_GET, []() {
-  BaseType_t res = xSemaphoreGive(inferenceTrigger);
-  
-  String html;
-  if (res == pdTRUE) {
-    html = R"=====(
-      <script>
-        alert("Capture queued successfully!");
-        window.location.href = "/";
-      </script>
-    )=====";
-  } else {
-    html = R"=====(
-      <script>
-        alert("Error: Capture already in progress. Please wait.");
-        window.location.href = "/";
-      </script>
-    )=====";
-  }
-  
-  server.send(200, "text/html", html);
-});
+    BaseType_t res = xSemaphoreGive(inferenceTrigger);
+    
+    String html;
+    if (res == pdTRUE) {
+      html = R"=====(
+        <script>
+          alert("Capture queued successfully!");
+          window.location.href = "/";
+        </script>
+      )=====";
+    } else {
+      html = R"=====(
+        <script>
+          alert("Error: Capture already in progress. Please wait.");
+          window.location.href = "/";
+        </script>
+      )=====";
+    }
+    
+    server.send(200, "text/html", html);
+  });
 
   server.onNotFound([]() { server.send(404, "text/plain", "Not Found"); });
   server.begin();
