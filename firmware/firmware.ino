@@ -33,7 +33,7 @@ const int photoInterval = 10000; // 10 seconds
 static QueueHandle_t   frameQueue   = nullptr; // frames for SD writer
 static SemaphoreHandle_t sdMutex     = nullptr; // protect SD card
 static SemaphoreHandle_t cameraMutex = nullptr; // exclusive camera access
-static SemaphoreHandle_t inferenceTrigger = nullptr; // user-requested photo
+static SemaphoreHandle_t sdTrigger = nullptr; // user-requested photo
 static TaskHandle_t streamTaskHandle = nullptr; // streaming task had
 
 static WebServer server(80);
@@ -65,7 +65,7 @@ void setup() {
   frameQueue = xQueueCreate(5, sizeof(camera_fb_t*));
   sdMutex = xSemaphoreCreateMutex();
   cameraMutex = xSemaphoreCreateMutex();
-  inferenceTrigger = xSemaphoreCreateBinary();
+  sdTrigger = xSemaphoreCreateBinary();
 
   xTaskCreatePinnedToCore(cameraCaptureTask,
                           "CamCap",
@@ -248,7 +248,7 @@ static void initWebServer() {
   });
 
   server.on("/save", HTTP_GET, []() {
-    BaseType_t res = xSemaphoreGive(inferenceTrigger);
+    BaseType_t res = xSemaphoreGive(sdTrigger);
     
     String html;
     if (res == pdTRUE) {
@@ -294,7 +294,6 @@ static void streamTask(void *pvParameters) {
     xSemaphoreGive(cameraMutex);
 
     if (!fb) {
-      // Something went wrong – just continue to keep the connection alive.
       continue;
     }
 
@@ -351,7 +350,7 @@ static void inferenceTask(void *pvParameters) {
 
 static void cameraCaptureTask(void *pvParameters) {
   for (;;) {
-    if (xSemaphoreTake(inferenceTrigger, portMAX_DELAY) != pdTRUE) continue;
+    if (xSemaphoreTake(sdTrigger, portMAX_DELAY) != pdTRUE) continue;
 
     if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
       Serial.println("CamTask: could not lock camera");

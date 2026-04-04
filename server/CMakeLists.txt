@@ -13,9 +13,11 @@ set(WDS_SOURCES
     src/main.cpp 
 )
 
+
 # Define an executable target
 add_executable(wds_program ${WDS_SOURCES})
 
+find_package(OpenSSL REQUIRED)
 find_package(OpenCV REQUIRED)
 
 
@@ -30,6 +32,8 @@ target_include_directories(wds_program PRIVATE ${OpenCV_INCLUDE_DIRS})
 
 # For Boost:
 target_include_directories(wds_program PRIVATE ${Boost_INCLUDE_DIRS})
+
+target_link_libraries(wds_program PRIVATE OpenSSL::SSL OpenSSL::Crypto);
 
 
 # 3. Link the Boost libraries using the modern target syntax

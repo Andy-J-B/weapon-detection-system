@@ -33,7 +33,6 @@
 namespace asio = boost::asio;
 using tcp       = asio::ip::tcp;
 
-/* Helper – trim whitespace from both ends of a string. */
 static inline std::string trim(const std::string& s)
 {
     auto start = std::find_if_not(s.begin(), s.end(),
@@ -44,41 +43,22 @@ static inline std::string trim(const std::string& s)
 }
 
 void sendPhoneAlert(const std::string& message) {
-    // Replace with your actual keys from secrets.h
     std::string token = PUSHOVER_TOKEN;
     std::string user  = PUSHOVER_USER;
     
-    // Construct a curl command (simple and synchronous for errors)
     std::string cmd = "curl -s \
         --form-string \"token=" + token + "\" \
         --form-string \"user=" + user + "\" \
         --form-string \"message=" + message + "\" \
         https://api.pushover.net/1/messages.json > /dev/null";
 
-    // Run it in the background so it doesn't hang the server
+    // Run it in the background
     std::system((cmd + " &").c_str());
 }
 
-
-/**
- * @brief Run the binary weapon detector.
- *
- * The function returns true if **any** detection with class id == 0 (weapon) is
- * found.  The background (“non‑weapon”) case is simply “no detection”.
- *
- * @param image        BGR cv::Mat received from the ESP32‑CAM (any resolution).
- * @param confThresh   Minimum (objectness × class) confidence.  Default 0.35.
- * @param nmsThresh    IoU threshold for NMS.                Default 0.45.
- * @return true        Weapon present.
- * @return false       No weapon.
- */
-bool detectWeapon(const cv::Mat& image,
-                 float confThresh = 0.35f,
-                 float nmsThresh  = 0.45f)
+bool detectWeapon(const cv::Mat& image, float confThresh = 0.35f, float nmsThresh  = 0.45f)
 {
-    // -----------------------------------------------------------
-    // 1️⃣ Load the model (static -> executed only once)
-    // -----------------------------------------------------------
+    // Load the model
     static const std::string modelPath = MODEL_PATH;
 
     static cv::dnn::Net net;
@@ -97,17 +77,12 @@ bool detectWeapon(const cv::Mat& image,
         }
     }
 
-    // -----------------------------------------------------------
-    // 2️⃣ Guard against empty input
-    // -----------------------------------------------------------
     if (image.empty()) {
         std::cerr << "⚠️  Received an empty image.\n";
         return false;
     }
 
-    // -----------------------------------------------------------
-    // 3️⃣ Pre‑process – letterbox to 640×640 (same size used at training)
-    // -----------------------------------------------------------
+    // preprocess the image
     const cv::Size INPUT_SIZE(640, 640);
     cv::Mat resized;
     float r = std::min(INPUT_SIZE.width  / static_cast<float>(image.cols),
@@ -116,44 +91,30 @@ bool detectWeapon(const cv::Mat& image,
     int new_unpad_h = static_cast<int>(std::round(image.rows * r));
     cv::resize(image, resized, cv::Size(new_unpad_w, new_unpad_h));
 
-    // Add constant padding (114) – exactly what YOLO‑v5 does
+
     int dw = INPUT_SIZE.width  - new_unpad_w;
     int dh = INPUT_SIZE.height - new_unpad_h;
-    dw /= 2;  dh /= 2;        // split evenly left/right and top/bottom
+    dw /= 2;  dh /= 2; 
     cv::Mat padded;
-    cv::copyMakeBorder(resized, padded,
-                       dh, dh, dw, dw,
-                       cv::BORDER_CONSTANT,
-                       cv::Scalar(114, 114, 114));
+    cv::copyMakeBorder(resized, padded, dh, dh, dw, dw, cv::BORDER_CONSTANT, cv::Scalar(114, 114, 114));
 
-    // Convert to blob (1,3,640,640), scale to [0,1] and swap RGB↔BGR
-    cv::Mat blob = cv::dnn::blobFromImage(padded,
-                                          1.0/255.0,
-                                          INPUT_SIZE,
-                                          cv::Scalar(),
-                                          true,   // swapRB
-                                          false); // no crop
+    cv::Mat blob = cv::dnn::blobFromImage(padded, 1.0/255.0, INPUT_SIZE, cv::Scalar(), false, false);
 
-    // -----------------------------------------------------------
-    // 4️⃣ Forward pass
-    // -----------------------------------------------------------
+    // forward pass into nn
     net.setInput(blob);
     cv::Mat out;
     try {
-        out = net.forward();   // shape: (1, N, 5+nc)  where nc=1
+        out = net.forward();
     } catch (const cv::Exception& e) {
         std::cerr << "❌ Inference failed: " << e.what() << "\n";
         return false;
     }
 
-    // -----------------------------------------------------------
-    // 5️⃣ Decode detections
-    // -----------------------------------------------------------
+    // get detections
     const int N = out.size[1];
     const int C = out.size[2];               // = 5 + nc  (nc == 1)
     CV_Assert(C >= 6);                       // sanity check
 
-    // 2‑D view [N x C] for easier indexing
     cv::Mat dets(N, C, CV_32F, out.ptr<float>());
 
     std::vector<int>   keepIdx;
@@ -164,16 +125,15 @@ bool detectWeapon(const cv::Mat& image,
     for (int i = 0; i < N; ++i) {
         const float* row = dets.ptr<float>(i);
         float objScore = row[4];
-        if (objScore < confThresh) continue;    // filter early
+        if (objScore < confThresh) continue; 
 
-        // class scores start at column 5 – we have only one class (weapon)
         int bestClass = -1;
         float bestClsScore = -1.f;
-        for (int c = 5; c<5; ++c) {
+        for (int c = 5; c < C; ++c) { 
             float clsScore = row[c];
             if (clsScore > bestClsScore) {
                 bestClsScore = clsScore;
-                bestClass = c -5;
+                bestClass = c - 5;
             }
         }
         if (bestClass < 0) continue;
@@ -181,19 +141,16 @@ bool detectWeapon(const cv::Mat& image,
         float confidence = objScore * bestClsScore;
         if (confidence < confThresh) continue;
 
-        // bbox is (center_x, center_y, w, h) normalized to INPUT_SIZE
         float cx = row[0];
         float cy = row[1];
         float w  = row[2];
         float h  = row[3];
 
-        // Convert to pixel coordinates in the padded image
         int x = static_cast<int>((cx - w/2.0f) * INPUT_SIZE.width );
         int y = static_cast<int>((cy - h/2.0f) * INPUT_SIZE.height);
         int bw = static_cast<int>(w * INPUT_SIZE.width);
         int bh = static_cast<int>(h * INPUT_SIZE.height);
 
-        // Undo padding offset
         x -= dw;
         y -= dh;
 
@@ -210,13 +167,12 @@ bool detectWeapon(const cv::Mat& image,
         bh = std::max(0, std::min(bh, image.rows - y));
 
         const char* clsName = (bestClass == 0) ? "Weapon" : "Human";
-        std::cout << "[RAW DET] class=" << clsName
-              << " (id=" << bestClass << ")"
-              << ", objScore=" << objScore
-              << ", clsScore=" << bestClsScore
-              << ", confidence=" << confidence << "\n";
+        // std::cout << "[RAW DET] class=" << clsName
+        //       << " (id=" << bestClass << ")"
+        //       << ", objScore=" << objScore
+        //       << ", clsScore=" << bestClsScore
+        //       << ", confidence=" << confidence << "\n";
 
-        // Store candidate (we will still apply NMS)
         keepIdx.push_back(i);
         keepConf.push_back(confidence);
         keepBox.emplace_back(x, y, bw, bh);

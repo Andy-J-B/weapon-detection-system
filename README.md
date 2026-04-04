@@ -101,7 +101,8 @@ The server receives a raw JPEG buffer, decodes it into a `cv::Mat`, and performs
 2. **Forward Pass:** Runs the ONNX model via `net.forward()`.
 3. **Post-Processing:** Scans detections for specific `weaponClassIds` and applies confidence filtering.
 
-### Quick Demo 
+### Quick Demo
 
 [![Video Thumbnail](https://i.ytimg.com/an_webp/8kkIwjpYlEA/mqdefault_6s.webp?du=3000&sqp=CODWo8wG&rs=AOn4CLD6R8_BiY-fqOz_deycQyLwz9unYA)](https://www.youtube.com/watch?v=8kkIwjpYlEA)
 
+https://www.kaggle.com/datasets/ugorjiir/gun-detection/data/code
