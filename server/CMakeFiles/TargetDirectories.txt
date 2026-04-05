@@ -1,0 +1,3 @@
+/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/CMakeFiles/wds_program.dir
+/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/CMakeFiles/edit_cache.dir
+/Users/Andy_1/dev/code/programs/GitHub/weapon-detection-system/server/CMakeFiles/rebuild_cache.dir
