@@ -33,6 +33,8 @@ add_executable(wds_program ${WDS_SOURCES})
 
 find_package(OpenSSL REQUIRED)
 find_package(OpenCV REQUIRED)
+find_package(CURL REQUIRED)
+find_package(Threads REQUIRED)
 
 
 # 1. Find the Boost package and components
@@ -40,19 +42,7 @@ find_package(OpenCV REQUIRED)
 # for now.
 find_package(Boost 1.89.0 REQUIRED  )
 
-# 2. Add include directories for headers
-# For OpenCV: include_directories is okay, but this is better:
-target_include_directories(wds_program PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_link_libraries(wds_program PRIVATE OpenSSL::SSL OpenSSL::Crypto 
+  CURL::libcurl Boost::headers Threads::Threads
+    ${OpenCV_LIBS}         )
 
-# For Boost:
-target_include_directories(wds_program PRIVATE ${Boost_INCLUDE_DIRS})
-
-target_link_libraries(wds_program PRIVATE OpenSSL::SSL OpenSSL::Crypto)
-
-
-# 3. Link the Boost libraries using the modern target syntax
-# This is the crucial step that links the required library.
-target_link_libraries(wds_program PRIVATE 
-    ${OpenCV_LIBS}         
-    ${Boost_LIBRARIES}      
-)

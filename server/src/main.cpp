@@ -18,6 +18,8 @@
 #include <boost/bind/bind.hpp>
 #include <cctype> // character logic
 #include <cstdlib>
+#include <curl/curl.h>
+#include <curl/easy.h>
 #include <iostream>
 #include <memory> // Memory management, smart pointers
 #include <opencv2/core.hpp>
@@ -28,6 +30,7 @@
 #include <sstream> //  treat strings as streams, enabling performing formatted input and output operations on them
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -44,20 +47,33 @@ static inline std::string trim(const std::string &s) {
 }
 
 void sendPhoneAlert(const std::string &message) {
-  std::string token = PUSHOVER_TOKEN;
-  std::string user = PUSHOVER_USER;
+  std::thread([message]() {
+    CURL *curl = curl_easy_init();
+    if (curl) {
+      std::string token = PUSHOVER_TOKEN;
+      std::string user = PUSHOVER_USER;
 
-  std::string cmd = "curl -s \
-        --form-string \"token=" +
-                    token + "\" \
-        --form-string \"user=" +
-                    user + "\" \
-        --form-string \"message=" +
-                    message + "\" \
-        https://api.pushover.net/1/messages.json > /dev/null";
+      char *escaped_msg =
+          curl_easy_escape(curl, message.c_str(), message.length());
 
-  // Run it in the background
-  std::system((cmd + " &").c_str());
+      std::string post_data = "token =" + token + "&user=" + user +
+                              "&message=" + std::string(escaped_msg);
+
+      curl_free(escaped_msg);
+      curl_easy_setopt(curl, CURLOPT_URL,
+                       "https://api.pushover.net/1/messages.json");
+      curl_easy_setopt(curl, CURLOPT_POSTFIELDS, post_data.c_str());
+
+      CURLcode res = curl_easy_perform(curl);
+
+      if (res != CURLE_OK) {
+        std::cerr << "⚠️ Pushover alert failed: " << curl_easy_strerror(res)
+                  << "\n";
+      }
+
+      curl_easy_cleanup(curl);
+    }
+  }).detach();
 }
 
 bool detectWeapon(const cv::Mat &image, float confThresh = 0.35f,
