@@ -1,6 +1,11 @@
 .vscode
 /server/build
 /firmware/secrets.h
+/server/server.key
+/server/server.crt
+/server/certs
+/server/CMakeFiles
+/docs
 venv
 # Prerequisites
 *.d

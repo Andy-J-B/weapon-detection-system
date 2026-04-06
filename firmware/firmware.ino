@@ -9,6 +9,8 @@
 #include "SD_MMC.h"
 #include "secrets.h"           
 #include "sd_read_write.h"
+#include <WiFiClientSecure>
+#include <time.h>
 
 /* ----------  Pin mapping ---------- */
 #define PWDN_GPIO_NUM   -1
@@ -33,7 +35,7 @@ const int photoInterval = 10000; // 10 seconds
 static QueueHandle_t   frameQueue   = nullptr; // frames for SD writer
 static SemaphoreHandle_t sdMutex     = nullptr; // protect SD card
 static SemaphoreHandle_t cameraMutex = nullptr; // exclusive camera access
-static SemaphoreHandle_t inferenceTrigger = nullptr; // user-requested photo
+static SemaphoreHandle_t sdTrigger = nullptr; // user-requested photo
 static TaskHandle_t streamTaskHandle = nullptr; // streaming task had
 
 static WebServer server(80);
@@ -56,6 +58,16 @@ void setup() {
   initCamera();
   connectWifi();
 
+  configTime(GMT_OFFSET, DAY_OFFSET, "pool.ntp.org", "time.nist.gov");
+  Serial.print("Waiting for NTP time sync ...");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 *2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("\nTime synchronized!");
+
   sdmmcInit();
   removeDir(SD_MMC, "/camera");
   createDir(SD_MMC, "/camera");
@@ -65,7 +77,7 @@ void setup() {
   frameQueue = xQueueCreate(5, sizeof(camera_fb_t*));
   sdMutex = xSemaphoreCreateMutex();
   cameraMutex = xSemaphoreCreateMutex();
-  inferenceTrigger = xSemaphoreCreateBinary();
+  sdTrigger = xSemaphoreCreateBinary();
 
   xTaskCreatePinnedToCore(cameraCaptureTask,
                           "CamCap",
@@ -248,7 +260,7 @@ static void initWebServer() {
   });
 
   server.on("/save", HTTP_GET, []() {
-    BaseType_t res = xSemaphoreGive(inferenceTrigger);
+    BaseType_t res = xSemaphoreGive(sdTrigger);
     
     String html;
     if (res == pdTRUE) {
@@ -294,7 +306,6 @@ static void streamTask(void *pvParameters) {
     xSemaphoreGive(cameraMutex);
 
     if (!fb) {
-      // Something went wrong – just continue to keep the connection alive.
       continue;
     }
 
@@ -336,14 +347,33 @@ static void inferenceTask(void *pvParameters) {
     }
 
     // POST request to C++ server
-    HTTPClient http;
-    http.setConnectTimeout(5000);
-    http.setTimeout(5000);
-    http.begin(POST_URL);
-    http.addHeader("Content-Type", "image/jpeg");
-    int rc = http.POST(fb->buf, fb->len);
-    Serial.printf("[Inference] POST rc=%d, size=%u bytes\n", rc, fb->len);
-    http.end();
+    WiFiClientSecure client;
+    client.setCACert(test_root_ca);
+
+    HTTPClient https;
+
+    Serial.print("[HTTPS] begin...\n");
+    if (https.begin(client, POST_URL)) {
+
+      https.addHeader("Content-Type", "image/jpeg");
+      int httpCode = https.POST(fb->buf, fb->len);
+
+      if (httpCode > 0) {
+        Serial.printf("[Inference] POST rc=%d, size=%u bytes\n", httpCode, fb->len);
+        if (httpCode == HTTP_CODE_OK) {
+          String payload = https.getString();
+          Serial.println(payload);
+        }
+      }
+      else {
+        Serial.printf("[HTTPS] POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+      }
+      https.end();
+    }
+    else {
+      Serial.printf("[HTTPS] Unable to connect\n");
+    }
+    Serial.println();
 
     esp_camera_fb_return(fb);
   }
@@ -351,7 +381,7 @@ static void inferenceTask(void *pvParameters) {
 
 static void cameraCaptureTask(void *pvParameters) {
   for (;;) {
-    if (xSemaphoreTake(inferenceTrigger, portMAX_DELAY) != pdTRUE) continue;
+    if (xSemaphoreTake(sdTrigger, portMAX_DELAY) != pdTRUE) continue;
 
     if (xSemaphoreTake(cameraMutex, pdMS_TO_TICKS(2000)) != pdTRUE) {
       Serial.println("CamTask: could not lock camera");
