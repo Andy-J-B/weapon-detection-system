@@ -9,6 +9,8 @@
 #include "SD_MMC.h"
 #include "secrets.h"           
 #include "sd_read_write.h"
+#include <WiFiClientSecure>
+#include <time.h>
 
 /* ----------  Pin mapping ---------- */
 #define PWDN_GPIO_NUM   -1
@@ -55,6 +57,16 @@ void setup() {
   delay(500);
   initCamera();
   connectWifi();
+
+  configTime(GMT_OFFSET, DAY_OFFSET, "pool.ntp.org", "time.nist.gov");
+  Serial.print("Waiting for NTP time sync ...");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 *2) {
+    delay(500);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println("\nTime synchronized!");
 
   sdmmcInit();
   removeDir(SD_MMC, "/camera");
@@ -335,14 +347,33 @@ static void inferenceTask(void *pvParameters) {
     }
 
     // POST request to C++ server
-    HTTPClient http;
-    http.setConnectTimeout(5000);
-    http.setTimeout(5000);
-    http.begin(POST_URL);
-    http.addHeader("Content-Type", "image/jpeg");
-    int rc = http.POST(fb->buf, fb->len);
-    Serial.printf("[Inference] POST rc=%d, size=%u bytes\n", rc, fb->len);
-    http.end();
+    WiFiClientSecure client;
+    client.setCACert(test_root_ca);
+
+    HTTPClient https;
+
+    Serial.print("[HTTPS] begin...\n");
+    if (https.begin(client, POST_URL)) {
+
+      https.addHeader("Content-Type", "image/jpeg");
+      int httpCode = https.POST(fb->buf, fb->len);
+
+      if (httpCode > 0) {
+        Serial.printf("[Inference] POST rc=%d, size=%u bytes\n", httpCode, fb->len);
+        if (httpCode == HTTP_CODE_OK) {
+          String payload = https.getString();
+          Serial.println(payload);
+        }
+      }
+      else {
+        Serial.printf("[HTTPS] POST... failed, error: %s\n", https.errorToString(httpCode).c_str());
+      }
+      https.end();
+    }
+    else {
+      Serial.printf("[HTTPS] Unable to connect\n");
+    }
+    Serial.println();
 
     esp_camera_fb_return(fb);
   }
