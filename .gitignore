@@ -7,6 +7,10 @@
 /server/CMakeFiles
 /docs
 venv
+.DS_Store
+README copy.md
+test1.jpeg
+
 # Prerequisites
 *.d
 yolov5/
