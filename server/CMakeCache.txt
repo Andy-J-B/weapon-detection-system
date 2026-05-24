@@ -127,6 +127,9 @@ CMAKE_OSX_DEPLOYMENT_TARGET:STRING=
 // inside the indicated SDK.
 CMAKE_OSX_SYSROOT:STRING=
 
+//No help, variable specified on the command line.
+CMAKE_PREFIX_PATH:UNINITIALIZED=/opt/homebrew/opt/openssl@3
+
 //Value Computed by CMake
 CMAKE_PROJECT_COMPAT_VERSION:STATIC=
 
@@ -227,6 +230,9 @@ OPENSSL_CRYPTO_LIBRARY:FILEPATH=/opt/homebrew/Cellar/openssl@3/3.6.0/lib/libcryp
 
 //Path to a file.
 OPENSSL_INCLUDE_DIR:PATH=/opt/homebrew/Cellar/openssl@3/3.6.0/include
+
+//No help, variable specified on the command line.
+OPENSSL_ROOT_DIR:UNINITIALIZED=/opt/homebrew/opt/openssl@3
 
 //Path to a library.
 OPENSSL_SSL_LIBRARY:FILEPATH=/opt/homebrew/Cellar/openssl@3/3.6.0/lib/libssl.dylib
